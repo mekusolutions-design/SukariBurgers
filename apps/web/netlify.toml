@@ -1,6 +1,5 @@
 [build]
   command = "npm install && npm run build"
-  # Publish directory is handled by the Next.js runtime plugin
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
