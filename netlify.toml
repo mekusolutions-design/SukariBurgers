@@ -1,6 +1,9 @@
-# Used when Netlify's Base directory is set to apps/web (UI setting).
 [build]
+  base = "apps/web"
   command = "npm install && npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
