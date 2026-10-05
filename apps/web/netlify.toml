@@ -1,6 +1,6 @@
 [build]
-  command = "npm --prefix apps/web install && npm --prefix apps/web run build"
-  # Do NOT set publish — @netlify/plugin-nextjs handles it
+  command = "npm install && npm run build"
+  # Do not set publish or base here
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
