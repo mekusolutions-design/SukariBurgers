@@ -1,6 +1,6 @@
 [build]
   command = "npm --prefix apps/web install && npm --prefix apps/web run build"
-  publish = "apps/web"
+  # Do NOT set publish — @netlify/plugin-nextjs handles it
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
