@@ -1,5 +1,6 @@
 [build]
-  command = "npm install && npm run build"
+  command = "npm --prefix apps/web install && npm --prefix apps/web run build"
+  publish = "apps/web"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
