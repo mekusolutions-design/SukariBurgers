@@ -1,11 +1,6 @@
-Base directory:
-apps/web
+[build]
+  command = "npm install && npm run build"
+  # Publish directory is handled by the Next.js runtime plugin
 
-Build command:
-npm install && npm run build
-
-Publish directory:
-[EMPTY / let Next.js plugin handle it]
-
-Plugin:
-@netlify/plugin-nextjs
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
