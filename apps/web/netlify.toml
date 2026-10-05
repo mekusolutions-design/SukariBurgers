@@ -1,7 +1,7 @@
 [build]
   # Works whether Netlify starts in the repo root or already inside apps/web.
   command = "[ -f next.config.ts ] || cd apps/web; npm install && npm run build"
-  publish = ".next"
+  publish = "apps/web/.next"
 
 [build.environment]
   NODE_VERSION = "20"
