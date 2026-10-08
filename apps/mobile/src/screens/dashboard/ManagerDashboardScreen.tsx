@@ -9,7 +9,7 @@ import type { RootNavigationProp } from '../../types/navigation';
 
 export default function ManagerDashboardScreen() {
   const navigation = useNavigation<RootNavigationProp>();
-  const { isManager } = useRole();
+  const { isManager, canUsePos } = useRole();
 
   if (!isManager) {
     return (
@@ -39,13 +39,15 @@ export default function ManagerDashboardScreen() {
         <Text style={styles.cardDesc}>Record new stock arrivals</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={styles.card}
-        onPress={() => canUsePos && navigation.navigate('PosOrder')}
-      >
-        <Text style={styles.cardTitle}>POS Orders</Text>
-        <Text style={styles.cardDesc}>Review recent sales</Text>
-      </TouchableOpacity>
+      {canUsePos && (
+        <TouchableOpacity
+          style={styles.card}
+          onPress={() => navigation.navigate('PosOrder')}
+        >
+          <Text style={styles.cardTitle}>POS Orders</Text>
+          <Text style={styles.cardDesc}>Review recent sales</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }

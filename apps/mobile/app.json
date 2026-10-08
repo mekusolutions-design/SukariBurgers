@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "Sukari Burgers",
+    "slug": "sukari-burgers",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +12,8 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sukariburgers.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +23,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.restflow.mobile"
+      "package": "com.sukariburgers.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -32,8 +33,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "71a34b12-e0d6-4482-8b22-1c09e1d87008"
+        "projectId": "28a10ab7-3597-457b-bc70-58c213734810"
       }
-    }
+    },
+    "owner": "simonkeya"
   }
 }

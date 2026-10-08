@@ -91,7 +91,7 @@ function sortStock(items: StockItem[]): StockItem[] {
 
 export default function StockOverviewScreen() {
   const navigation = useNavigation<RootNavigationProp>();
-  const { isKitchen, isPos, isManager } = useRole();
+  const { isKitchen, isPos, isManager, canUsePos } = useRole();
 
   const {
     stock,
@@ -383,7 +383,7 @@ export default function StockOverviewScreen() {
                 marginTop: spacing.sm,
               },
             ]}
-            onPress={() => canUsePos && navigation.navigate('PosOrder')}
+            onPress={() => navigation.navigate('PosOrder')}
           >
             <Text style={styles.actionButtonText}>+ New POS Order</Text>
           </TouchableOpacity>
