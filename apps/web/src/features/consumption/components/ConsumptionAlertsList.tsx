@@ -9,6 +9,7 @@ const TONE: Record<ConsumptionAlert["type"], "warning" | "danger"> = {
   unusual_spike: "warning",
   unusual_drop: "warning",
   negative_margin: "danger",
+  high_food_cost: "danger",
 };
 
 export function ConsumptionAlertsList({ alerts }: { alerts: ConsumptionAlert[] }) {

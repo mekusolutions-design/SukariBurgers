@@ -423,9 +423,15 @@ export class ConsumptionService {
     });
   }
 
-  /** Line-level + nested combo selection deductions (Go pos_sale shape). */
+  /**
+   * Prefer authoritative line stock_deductions (server-resolved once).
+   * Nested selection deductions are only used when the line has none —
+   * never concatenate both (that doubles combo consumption).
+   */
   private mergeLineDeductions(row: Record<string, unknown>): IngredientUse[] {
     const primary = this.parseDeductions(row.stock_deductions);
+    if (primary.length > 0) return primary;
+
     const nested: IngredientUse[] = [];
     const selections = Array.isArray(row.selections) ? row.selections : [];
     for (const sel of selections) {
@@ -434,9 +440,21 @@ export class ConsumptionService {
         ...this.parseDeductions(s.stock_deductions ?? s.deductions),
       );
     }
-    if (nested.length === 0) return primary;
-    if (primary.length === 0) return nested;
-    return [...primary, ...nested];
+    if (nested.length > 0) return nested;
+
+    // Combo resolved_menu_items may carry per-item deductions
+    const resolved = Array.isArray(row.resolved_menu_items)
+      ? row.resolved_menu_items
+      : Array.isArray(row.resolvedMenuItems)
+        ? row.resolvedMenuItems
+        : [];
+    for (const mi of resolved) {
+      const m = mi as Record<string, unknown>;
+      nested.push(
+        ...this.parseDeductions(m.stock_deductions ?? m.deductions),
+      );
+    }
+    return nested;
   }
 
   private parseDeductions(raw: unknown): IngredientUse[] {

@@ -20,6 +20,7 @@ import { useProductionQueue } from "../hooks/use-production-queue";
 import { useClosingStock } from "../hooks/use-closing-stock";
 import { kitchenApi } from "../api";
 import { startProductionSchema, type StartProductionInput } from "../schema";
+import { PrePrepModal } from "./PrePrepModal";
 
 import { KitchenSummaryCards } from "./KitchenSummaryCards";
 import { ActiveOrdersBoard } from "./ActiveOrdersBoard";
@@ -168,6 +169,7 @@ function StartProductionModal({
 }
 
 export function KitchenPage({ shopId }: { shopId: string }) {
+  const [prePrepOpen, setPrePrepOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [finishTarget, setFinishTarget] =
     useState<ProductionQueueItem | null>(null);
@@ -232,9 +234,14 @@ export function KitchenPage({ shopId }: { shopId: string }) {
         title="Kitchen"
         description="Orders, production queue, history, recipes, refills, and closing stock."
         actions={
-          <Button onClick={() => setModalOpen(true)}>
-            <Plus className="h-4 w-4" /> Start batch
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => setPrePrepOpen(true)}>
+              Pre-prep
+            </Button>
+            <Button onClick={() => setModalOpen(true)}>
+              <Plus className="h-4 w-4" /> Start batch
+            </Button>
+          </div>
         }
       />
 
@@ -310,6 +317,18 @@ export function KitchenPage({ shopId }: { shopId: string }) {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <PrePrepModal
+        open={prePrepOpen}
+        onOpenChange={setPrePrepOpen}
+        shopId={shopId}
+        onCompleted={() => {
+          void queryClient.invalidateQueries({ queryKey: ["kitchen"] });
+          void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+          void queryClient.invalidateQueries({ queryKey: ["waste"] });
+          void queryClient.invalidateQueries({ queryKey: ["finished-goods"] });
+        }}
+      />
 
       <StartProductionModal
         open={modalOpen}

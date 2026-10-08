@@ -27,6 +27,9 @@ import {
   type SubmitClosingStockDto,
 } from './dto/closing-stock.dto';
 import { KitchenService } from './kitchen.service';
+import { ProductionService } from '../production/production.service';
+import type { PrePrepDto } from '../production/dto/pre-prep.dto';
+import { PrePrepSchema } from '../production/dto/pre-prep.dto';
 
 interface AuthenticatedUser {
   id: string;
@@ -39,7 +42,30 @@ interface AuthenticatedUser {
 @Controller('kitchen')
 @UseGuards(RolesGuard)
 export class KitchenController {
-  constructor(private readonly kitchenService: KitchenService) {}
+  constructor(
+    private readonly kitchenService: KitchenService,
+    private readonly productionService: ProductionService,
+  ) {}
+
+  /**
+   * Alias for POST /production/pre-prep — same handler.
+   * Kitchen module is always mounted; use this if production path 404s.
+   */
+  @Post('pre-prep')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles('KITCHEN', 'MANAGER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Pre-prep batch (raw → prepped FG). Alias of POST /production/pre-prep',
+  })
+  @UsePipes(new ZodValidationPipe(PrePrepSchema))
+  async prePrep(
+    @Body() dto: PrePrepDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.productionService.prePrep(dto, user.id);
+  }
+
+
 
   /**
    * Static GET routes positioned before parameterized routes

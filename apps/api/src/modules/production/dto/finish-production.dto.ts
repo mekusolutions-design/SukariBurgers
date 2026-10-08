@@ -30,10 +30,15 @@ export const FinishProductionSchema = z
     waste_reason: z.string().optional(),
     waste_unit: z.string().optional(),
     batch_number: z.string().min(1, { message: 'Batch number is required' }),
-    expiry_date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .or(z.date()),
+    expiry_date: z.union([
+      z
+        .string()
+        .min(1, { message: 'Expiry date is required for produced stock' })
+        .regex(/^\d{4}-\d{2}-\d{2}$/, {
+          message: 'Expiry date must be YYYY-MM-DD',
+        }),
+      z.date(),
+    ]),
     unit_cost: z.number().min(0).optional(),
     total_cost: z.number().min(0).optional(),
     inputs: z.array(ProductionLineSchema).optional(),

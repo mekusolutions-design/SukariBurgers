@@ -19,6 +19,17 @@ function asString(value: unknown, fallback = ''): string {
   return fallback;
 }
 
+/** Spec: round to 2dp; if 0.00 it is not a variance and must be hidden. */
+function isMaterialVariance(qty: number, value?: number): boolean {
+  const q = Math.round((Number(qty) || 0) * 100) / 100;
+  if (Math.abs(q) >= 0.01) return true;
+  if (value != null) {
+    const v = Math.round((Number(value) || 0) * 100) / 100;
+    return Math.abs(v) >= 0.01;
+  }
+  return false;
+}
+
 @Injectable()
 export class VarianceService {
   private readonly logger = new Logger(VarianceService.name);
@@ -147,7 +158,16 @@ export class VarianceService {
       });
     }
 
-    const all = Array.from(batches.values());
+    // Spec fix #5: hide batches whose variance rounds to 0.00
+    const all = Array.from(batches.values()).filter((b) => {
+      const vq = Number(b.variancePct ?? 0);
+      const vv = Number(b.totalVarianceValue ?? 0);
+      // Keep if any material value OR explicitly flagged with non-zero lines
+      if (isMaterialVariance(vq, vv)) return true;
+      if (b.flagged === true && isMaterialVariance(0, vv)) return true;
+      // Keep production variance rows with material qty encoded in totalVarianceValue
+      return isMaterialVariance(0, vv);
+    });
     const total = all.length;
     const items = all.slice(skip, skip + take);
 

@@ -239,6 +239,8 @@ export function FinishProductionModal({
   const [loadingRecipe, setLoadingRecipe] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [batchNumber, setBatchNumber] = useState("");
+  const [expiryDate, setExpiryDate] = useState("");
   const [inputs, setInputs] = useState<LineDraft[]>([]);
   const [outputs, setOutputs] = useState<LineDraft[]>([]);
   const [actualYield, setActualYield] = useState("1");
@@ -257,6 +259,10 @@ export function FinishProductionModal({
     async function load() {
       setLoadingRecipe(true);
       setError(null);
+      setBatchNumber("");
+      // Default expiry empty — user must choose (shelf-life of produced FG)
+      setExpiryDate("");
+
       try {
         const recipe = queueItem.recipeId
           ? ((await kitchenApi.getRecipe(
@@ -392,6 +398,24 @@ export function FinishProductionModal({
     if (submitting) return;
     setError(null);
 
+    if (!batchNumber.trim()) {
+      setError("Batch number is required.");
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryDate.trim())) {
+      setError("Expiry date is required for the produced item.");
+      return;
+    }
+    {
+      const exp = new Date(expiryDate.trim() + "T00:00:00");
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (Number.isNaN(exp.getTime()) || exp < today) {
+        setError("Expiry date must be today or a future date.");
+        return;
+      }
+    }
+
     if (multiOutput) {
       for (const row of outputs) {
         if (!row.itemId.trim()) {
@@ -473,6 +497,8 @@ export function FinishProductionModal({
           wasteReason: payload.wasteReason,
           inputs: payload.inputs,
           outputs: payload.outputs,
+          batchNumber: batchNumber.trim(),
+          expiryDate: expiryDate.trim(),
         },
       );
       onOpenChange(false);
@@ -736,6 +762,36 @@ export function FinishProductionModal({
               </div>
             </>
           )}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink">
+                Batch number <span className="text-danger">*</span>
+              </label>
+              <Input
+                value={batchNumber}
+                onChange={(e) => setBatchNumber(e.target.value)}
+                placeholder="e.g. PROD-DOUGH-0410"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink">
+                Expiry date <span className="text-danger">*</span>
+              </label>
+              <Input
+                type="date"
+                value={expiryDate}
+                onChange={(e) => setExpiryDate(e.target.value)}
+                required
+                min={new Date().toISOString().slice(0, 10)}
+              />
+              <p className="mt-1 text-xs text-ink-muted">
+                When this produced stock expires (required before finish).
+              </p>
+            </div>
+          </div>
+
         </div>
 
         <div className="flex justify-end gap-2 border-t border-border px-5 py-4">

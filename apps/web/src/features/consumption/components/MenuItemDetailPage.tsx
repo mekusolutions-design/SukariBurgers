@@ -9,7 +9,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { FullPageSpinner } from "@/components/feedback/FullPageSpinner";
 import { LineChart } from "@/components/charts/LineChart";
 import { formatCurrency } from "@/lib/format/currency";
-import { formatPercent } from "@/lib/format/percent";
+import { formatPercentValue } from "@/lib/format/percent";
 import { routes } from "@/lib/routes";
 import { useMenuItemConsumption } from "../hooks/use-menu-item-consumption";
 import { PeriodFilter } from "@/features/dashboard/components/PeriodFilter";
@@ -48,8 +48,8 @@ export function MenuItemDetailPage({ shopId, menuItemId }: { shopId: string; men
         <Card className="p-4">
           <p className="text-xs text-ink-muted">Food cost %</p>
           <p className="mt-1 flex items-center gap-2 font-display text-xl font-semibold text-ink">
-            {formatPercent(data.foodCostPercent)}
-            {data.foodCostPercent !== null && data.foodCostPercent > 0.35 ? <Badge tone="danger">High</Badge> : null}
+            {formatPercentValue(data.foodCostPercent)}
+            {data.foodCostPercent !== null && Number(data.foodCostPercent) > 35 ? <Badge tone="danger">High</Badge> : null}
           </p>
         </Card>
       </div>

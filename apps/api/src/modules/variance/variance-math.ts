@@ -120,9 +120,13 @@ export function computeProductionVarianceLines(opts: {
     variance_value: roundMoney(Math.abs(fgVar) * fgCost),
   });
 
-  const valueAffected = roundMoney(
-    lines.reduce((s, l) => s + l.variance_value, 0),
-  );
+  /**
+   * Batch variance VALUE = finished-good output variance only.
+   * Ingredient lines are explanatory (theoretical scale of materials for
+   * planned vs actual yield). Summing FG + ingredients double-counted
+   * (e.g. dough Ksh 36 + flour/yeast/… → Ksh 64.75). Michael 4 Oct 2026.
+   */
+  const valueAffected = roundMoney(Math.abs(fgVar) * fgCost);
   const variancePctHeader = fgPct;
   const flagged = variancePctHeader > opts.tolerancePercent;
 

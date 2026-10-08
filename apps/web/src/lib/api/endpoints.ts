@@ -47,12 +47,14 @@ export const endpoints = {
     productionHistory: "/kitchen/production-history",
     closingStock: "/kitchen/closing-stock",
     submitClosingStock: "/kitchen/closing-stock",
+    prePrep: "/kitchen/pre-prep",
   },
 
   production: {
     start: "/production/start",
     finish: "/production/finish",
     history: "/production/history",
+    prePrep: "/production/pre-prep",
   },
 
   recipe: {

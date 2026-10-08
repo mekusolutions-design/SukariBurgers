@@ -220,6 +220,26 @@ export class ProjectionEngineService {
         case 'stock_count_completed':
           break;
 
+        case 'pre_prep_completed':
+          await this.handleProductionFinished(payload, shopId, event);
+          if (payload.waste && typeof payload.waste === 'object') {
+            const w = payload.waste as Record<string, unknown>;
+            if (asNumber(w.quantity) > 0) {
+              await this.handleWaste(
+                {
+                  ...payload,
+                  item_id: asString(w.item_id),
+                  quantity: asNumber(w.quantity),
+                  waste_reason: asString(w.reason) || 'pre_prep',
+                  total_cost: 0,
+                },
+                shopId,
+                event,
+              );
+            }
+          }
+          break;
+
         default:
           this.logger.debug(`No projection handler for: ${event.event_type}`);
       }
@@ -963,12 +983,23 @@ export class ProjectionEngineService {
       }
     }
 
-    // Deduct stock only from explicit stock lines — no re-deduct on status events
+    /**
+     * INVENTORY SOURCE OF TRUTH — stock moves exactly once per sale.
+     * pos_sale carries authoritative stock_deductions.
+     * order_sent_to_kitchen / status / payment events may repeat the same
+     * lines for KDS display but MUST NOT re-deduct inventory (combo 2x bug).
+     */
+    const mayDeductStock = event.event_type === 'pos_sale';
+
     const deductions: Array<{
       item_id: string;
       quantity: number;
       unit_cost: number;
     }> = [];
+
+    if (!mayDeductStock) {
+      return;
+    }
 
     if (Array.isArray(payload.stock_deductions)) {
       for (const d of payload.stock_deductions) {

@@ -11,7 +11,7 @@ import type {
   Recipe,
   RecipeIngredient,
 } from "./types";
-import type { StartProductionInput, ClosingStockSubmission } from "./schema";
+import type { StartProductionInput, ClosingStockSubmission, PrePrepInput } from "./schema";
 
 function toKitchenIngredient(raw: Record<string, unknown>): RecipeIngredient {
   return {
@@ -375,10 +375,17 @@ export const kitchenApi = {
       item_name: options?.itemName,
       planned_quantity: options?.plannedQuantity,
       actual_quantity_produced: actualYield,
-      batch_number:
-        options?.batchNumber ?? `AUTO-${productionId.slice(-8)}`,
-      expiry_date:
-        options?.expiryDate ?? new Date().toISOString().slice(0, 10),
+      batch_number: options?.batchNumber?.trim()
+        ? options.batchNumber.trim()
+        : `AUTO-${productionId.slice(-8)}`,
+      // Never invent shelf life — modal must collect expiry (Michael 4 Oct 2026)
+      expiry_date: options?.expiryDate?.trim()
+        ? options.expiryDate.trim()
+        : (() => {
+            throw new Error(
+              "Expiry date is required when finishing production.",
+            );
+          })(),
       unit_cost: options?.unitCost ?? 0,
       waste_quantity: options?.wasteQuantity ?? 0,
       waste_reason: options?.wasteReason,
@@ -616,4 +623,39 @@ export const kitchenApi = {
       throw toApiError(error);
     }
   },
+  async submitPrePrep(shopId: string, input: PrePrepInput): Promise<{
+    batchId: string;
+    original_qty: number;
+    yielded_qty: number;
+    lost_qty: number;
+    loss_pct: number;
+    prepped_unit_cost: number;
+  }> {
+    try {
+      const { data } = await apiClient.post(endpoints.kitchen.prePrep ?? endpoints.production.prePrep, {
+        shop_id: shopId,
+        raw_item_id: input.raw_item_id,
+        prepped_item_id: input.prepped_item_id,
+        prepped_item_name: input.prepped_item_name,
+        original_qty: input.original_qty,
+        yielded_qty: input.yielded_qty,
+        loss_reason: input.loss_reason,
+        note: input.note,
+        unit: input.unit ?? "kg",
+        method: input.method,
+      });
+      const root = (data ?? {}) as Record<string, unknown>;
+      return {
+        batchId: String(root.batchId ?? root.batch_id ?? ""),
+        original_qty: Number(root.original_qty ?? input.original_qty),
+        yielded_qty: Number(root.yielded_qty ?? input.yielded_qty),
+        lost_qty: Number(root.lost_qty ?? 0),
+        loss_pct: Number(root.loss_pct ?? 0),
+        prepped_unit_cost: Number(root.prepped_unit_cost ?? 0),
+      };
+    } catch (error) {
+      throw toApiError(error);
+    }
+  },
+
 };

@@ -254,14 +254,7 @@ export function OrderDetailPage({
                   Mark paid
                 </Button>
               ) : (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => payMutation.mutate("unpaid")}
-                  loading={payMutation.isPending}
-                >
-                  Mark unpaid
-                </Button>
+                <Badge tone="success">Paid</Badge>
               )}
             </CardContent>
           </Card>

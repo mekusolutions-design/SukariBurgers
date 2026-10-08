@@ -10,6 +10,7 @@ import type { VarianceComputeResult } from '../variance/variance-engine.service'
 import { ProductionGateway } from './production.gateway';
 import type { StartProductionDto } from './dto/start-production.dto';
 import type { FinishProductionDto } from './dto/finish-production.dto';
+import type { PrePrepDto } from './dto/pre-prep.dto';
 import type { RecordWasteDto } from '../waste/dto/record-waste.dto';
 import { convertQuantity } from '../../common/utils/units.utils';
 import { normalizeSku } from '../../common/utils/sku.util';
@@ -1002,4 +1003,174 @@ export class ProductionService {
       );
     }
   }
+  /**
+   * Pre-prep: deduct raw original qty, optional waste for lost, create prepped FG lot.
+   * lost = original − yielded (server-only). Cost absorbed into prepped unit cost.
+   */
+  async prePrep(dto: PrePrepDto, actorUserId: string) {
+    const shopId = (dto.shop_id || '1').trim() || '1';
+    const rawId = dto.raw_item_id.trim();
+    const preppedId = dto.prepped_item_id.trim();
+    const original = Number(dto.original_qty);
+    const yielded = Number(dto.yielded_qty);
+
+    if (!(original > 0) || !(yielded > 0)) {
+      throw new BadRequestException('original_qty and yielded_qty must be > 0');
+    }
+    if (yielded > original) {
+      throw new BadRequestException('yielded_qty cannot exceed original_qty');
+    }
+
+    const lost = Math.round((original - yielded) * 1000) / 1000;
+    const lossPct =
+      original > 0 ? Math.round((lost / original) * 1000) / 10 : 0;
+    if (lost > 0 && !(dto.loss_reason && dto.loss_reason.trim())) {
+      throw new BadRequestException(
+        'loss_reason is required when lost weight > 0',
+      );
+    }
+
+    const inv = await this.prisma.inventoryProjection.findUnique({
+      where: { shop_id_item_id: { shop_id: shopId, item_id: rawId } },
+      include: { item: { select: { name: true, unit: true } } },
+    });
+    if (!inv) {
+      throw new BadRequestException(
+        `Raw item not in inventory for this shop: ${rawId}. Use the exact Item SKU (item_id).`,
+      );
+    }
+    const onHand = Number(inv.available_stock ?? 0);
+    if (onHand + 1e-9 < original) {
+      throw new BadRequestException(
+        `Insufficient raw stock for ${rawId}: need ${original}, have ${onHand}`,
+      );
+    }
+
+    let rawUC = 0;
+    const avg = inv.avg_unit_cost != null ? Number(inv.avg_unit_cost) : 0;
+    if (avg > 0) {
+      rawUC = avg;
+    } else if (onHand > 0 && inv.total_value != null) {
+      const tv = Number(inv.total_value);
+      if (tv > 0) rawUC = tv / onHand;
+    }
+
+    const totalRaw = rawUC * original;
+    const preppedUC =
+      yielded > 0 ? Math.round((totalRaw / yielded) * 10000) / 10000 : 0;
+    const unit = (dto.unit && dto.unit.trim()) || inv.item?.unit || 'kg';
+    const name =
+      (dto.prepped_item_name && dto.prepped_item_name.trim()) || preppedId;
+    const note = (dto.note || dto.notes || '').trim() || undefined;
+    const batchId = `PREP-${Date.now().toString(36).toUpperCase()}`;
+    const idempotencyKey = `pre-prep-${shopId}-${rawId}-${preppedId}-${original}-${yielded}-${actorUserId}`;
+
+    const enforceResult = (await this.idempotencyService.enforce(
+      idempotencyKey,
+      dto,
+    )) as IdempotencyResult;
+
+    if (enforceResult.isReplay && enforceResult.existing) {
+      return {
+        success: true,
+        batchId,
+        eventId: enforceResult.existing.id,
+        original_qty: original,
+        yielded_qty: yielded,
+        lost_qty: lost,
+        loss_pct: lossPct,
+        prepped_unit_cost: preppedUC,
+        message: 'Already processed (idempotent replay)',
+      };
+    }
+
+    const payload: Record<string, unknown> = {
+      batch_id: batchId,
+      batch_type: 'pre_prep',
+      shop_id: shopId,
+      shopId,
+      raw_item_id: rawId,
+      prepped_item_id: preppedId,
+      prepped_item_name: name,
+      original_qty: original,
+      yielded_qty: yielded,
+      lost_qty: lost,
+      loss_pct: lossPct,
+      loss_reason: dto.loss_reason?.trim() || null,
+      note: note ?? null,
+      method: dto.method?.trim() || null,
+      unit,
+      raw_unit_cost: rawUC,
+      total_raw_cost: totalRaw,
+      prepped_unit_cost: preppedUC,
+      stock_deductions: [
+        { item_id: rawId, quantity: original, unit, unit_cost: rawUC },
+      ],
+      inputs: [
+        {
+          item_id: rawId,
+          actual_quantity: original,
+          quantity: original,
+          unit_cost: rawUC,
+        },
+      ],
+      outputs: [
+        {
+          item_id: preppedId,
+          item_name: name,
+          quantity: yielded,
+          usable_quantity: yielded,
+          unit,
+          unit_cost: preppedUC,
+          total_cost: totalRaw,
+          category: 'Finished Goods',
+          batch_type: 'pre_prep',
+        },
+      ],
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+    };
+
+    if (lost > 0) {
+      payload.waste = {
+        item_id: rawId,
+        quantity: lost,
+        unit,
+        reason: dto.loss_reason?.trim(),
+        cause: 'pre_prep',
+        value: 0,
+        original_qty: original,
+        yielded_qty: yielded,
+        batch_id: batchId,
+      };
+    }
+
+    const event = await this.eventStore.appendEvent({
+      event_type: 'pre_prep_completed',
+      actor_user_id: actorUserId,
+      idempotency_key: idempotencyKey,
+      item_id: rawId,
+      quantity: original,
+      unit_cost: rawUC,
+      total_cost: totalRaw,
+      batch_number: batchId,
+      waste_reason: dto.loss_reason?.trim() || undefined,
+      payload,
+    });
+
+    return {
+      success: true,
+      batchId,
+      eventId: event.id,
+      original_qty: original,
+      yielded_qty: yielded,
+      lost_qty: lost,
+      loss_pct: lossPct,
+      prepped_unit_cost: preppedUC,
+      total_raw_cost: totalRaw,
+      message: 'Pre-prep completed',
+    };
+  }
+
+
 }

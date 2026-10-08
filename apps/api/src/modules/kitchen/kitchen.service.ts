@@ -1374,4 +1374,83 @@ export class KitchenService {
     }
     return undefined;
   }
+  async listClosingStockHistory(shopId: string = '1', limit = 50) {
+    const take = Math.min(Math.max(limit || 50, 1), 200);
+    const events = await this.prisma.event.findMany({
+      where: {
+        shop_id: shopId,
+        event_type: { in: ['closing_stock_counted', 'stock_count_completed'] },
+      },
+      orderBy: { created_at: 'desc' },
+      take,
+      include: { actor: { select: { name: true, email: true } } },
+    });
+
+    const items = events.map((ev) => {
+      const p = (ev.payload ?? {}) as Record<string, unknown>;
+      return {
+        batchId: String(p.batch_id ?? p.batchId ?? ev.id),
+        batchNumber: String(p.batch_number ?? p.batchNumber ?? ev.batch_number ?? ''),
+        shopId: ev.shop_id,
+        shiftLabel: (p.shift_label ?? p.shiftLabel ?? null) as string | null,
+        countedAt: ev.created_at.toISOString(),
+        countedBy:
+          (ev as { actor?: { name?: string; email?: string } }).actor?.name ||
+          (ev as { actor?: { email?: string } }).actor?.email ||
+          null,
+        itemsCounted: Number(p.items_counted ?? p.itemsCounted ?? 0),
+        itemsFlagged: Number(p.items_flagged ?? p.itemsFlagged ?? 0),
+        totalVarianceValue: Number(
+          p.total_variance_value ?? p.totalVarianceValue ?? 0,
+        ),
+        readOnly: true,
+      };
+    });
+
+    return { success: true, shopId, items, total: items.length };
+  }
+
+  async getClosingStockHistoryItem(batchId: string) {
+    const events = await this.prisma.event.findMany({
+      where: {
+        event_type: { in: ['closing_stock_counted', 'stock_count_completed'] },
+      },
+      orderBy: { created_at: 'desc' },
+      take: 300,
+      include: { actor: { select: { name: true, email: true } } },
+    });
+
+    const ev = events.find((e) => {
+      const p = (e.payload ?? {}) as Record<string, unknown>;
+      const id = String(p.batch_id ?? p.batchId ?? e.id);
+      const num = String(p.batch_number ?? p.batchNumber ?? e.batch_number ?? '');
+      return id === batchId || num === batchId || e.id === batchId;
+    });
+
+    if (!ev) {
+      return { success: false, message: 'Closing stock batch not found' };
+    }
+
+    const p = (ev.payload ?? {}) as Record<string, unknown>;
+    return {
+      success: true,
+      readOnly: true,
+      batchId: String(p.batch_id ?? p.batchId ?? ev.id),
+      batchNumber: String(p.batch_number ?? p.batchNumber ?? ev.batch_number ?? ''),
+      shopId: ev.shop_id,
+      shiftLabel: (p.shift_label ?? p.shiftLabel ?? null) as string | null,
+      countedAt: ev.created_at.toISOString(),
+      countedBy:
+        (ev as { actor?: { name?: string } }).actor?.name ||
+        (ev as { actor?: { email?: string } }).actor?.email ||
+        null,
+      itemsCounted: Number(p.items_counted ?? 0),
+      itemsFlagged: Number(p.items_flagged ?? 0),
+      totalVarianceValue: Number(p.total_variance_value ?? 0),
+      lines: Array.isArray(p.lines) ? p.lines : [],
+      notes: (p.notes ?? null) as string | null,
+    };
+  }
+
+
 }

@@ -122,3 +122,38 @@ describe('computeProductionVarianceLines', () => {
     );
   });
 });
+
+
+  it('value_affected is FG only — does not sum ingredient lines (Michael double-count)', () => {
+    const r = computeProductionVarianceLines({
+      productItemId: 'PIZZA_DOUGH',
+      productName: 'PIZZA DOUGH',
+      productUnit: 'g',
+      plannedQuantity: 1000,
+      actualQuantityProduced: 800,
+      recipeYield: 1000,
+      productUnitCost: 0.18, // 200 g × 0.18 = 36
+      ingredients: [
+        {
+          raw_item_id: 'FLOUR',
+          raw_item_name: 'FLOUR',
+          quantity_per_unit: 1000,
+          unit: 'g',
+          unit_cost: 0.12, // 200 × 0.12 = 24
+        },
+        {
+          raw_item_id: 'YEAST',
+          raw_item_name: 'INSTANT YEAST',
+          quantity_per_unit: 8,
+          unit: 'g',
+          unit_cost: 0.6,
+        },
+      ],
+      tolerancePercent: 5,
+    });
+    const dough = r.lines.find((l) => l.item_id === 'PIZZA_DOUGH')!;
+    expect(dough.variance_value).toBe(36);
+    // Must NOT be 36 + 24 + yeast…
+    expect(r.value_affected).toBe(36);
+    expect(r.value_affected).toBe(dough.variance_value);
+  });

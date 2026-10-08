@@ -25,6 +25,8 @@ import type { StartProductionDto } from './dto/start-production.dto';
 import { StartProductionSchema } from './dto/start-production.dto';
 import type { FinishProductionDto } from './dto/finish-production.dto';
 import { FinishProductionSchema } from './dto/finish-production.dto';
+import type { PrePrepDto } from './dto/pre-prep.dto';
+import { PrePrepSchema } from './dto/pre-prep.dto';
 import {
   ProductionService,
   type FinishProductionResult,
@@ -75,6 +77,21 @@ export class ProductionController {
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<StartProductionResult> {
     return await this.productionService.startProduction(dto, user.id);
+  }
+
+  @Post('pre-prep')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles('KITCHEN', 'MANAGER', 'ADMIN')
+  @ApiOperation({
+    summary:
+      'Pre-prep: raw → prepped FG; lost = original − yielded (system-calculated)',
+  })
+  @UsePipes(new ZodValidationPipe(PrePrepSchema))
+  async prePrep(
+    @Body() dto: PrePrepDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return await this.productionService.prePrep(dto, user.id);
   }
 
   @Post('finish')

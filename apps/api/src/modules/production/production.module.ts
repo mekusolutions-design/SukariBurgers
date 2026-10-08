@@ -10,6 +10,7 @@ import { VarianceModule } from '../variance/variance.module';
 import { PrismaModule } from '../../../prisma/prisma.module';
 import { ProductionController } from './production.controller';
 import { ProductionService } from './production.service';
+import { PrePrepService } from './pre-prep.service';
 import { ProductionGateway } from './production.gateway';
 
 @Module({
@@ -24,7 +25,7 @@ import { ProductionGateway } from './production.gateway';
     JwtModule.register({}),
   ],
   controllers: [ProductionController],
-  providers: [ProductionService, ProductionGateway],
-  exports: [ProductionService],
+  providers: [ProductionService, PrePrepService, ProductionGateway],
+  exports: [ProductionService, PrePrepService],
 })
 export class ProductionModule {}

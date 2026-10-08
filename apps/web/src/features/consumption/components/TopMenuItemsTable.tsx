@@ -14,7 +14,7 @@ import {
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Badge } from "@/components/ui/Badge";
 import { formatCurrency } from "@/lib/format/currency";
-import { formatPercent } from "@/lib/format/percent";
+import { formatPercentValue } from "@/lib/format/percent";
 import { routes } from "@/lib/routes";
 import { UtensilsCrossed } from "lucide-react";
 import type { TopConsumedMenuItem } from "../types";
@@ -67,9 +67,9 @@ export function TopMenuItemsTable({
                     "—"
                   ) : (
                     <Badge
-                      tone={item.foodCostPercent > 35 ? "danger" : "success"}
+                      tone={Number(item.foodCostPercent) > 35 ? "danger" : "success"}
                     >
-                      {formatPercent(item.foodCostPercent)}
+                      {formatPercentValue(item.foodCostPercent)}
                     </Badge>
                   )}
                 </TableCell>
