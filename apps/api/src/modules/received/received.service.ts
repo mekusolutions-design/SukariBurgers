@@ -6,6 +6,11 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { WasteService } from '../waste/waste.service';
 import { normalizeIngredientCategory } from '../../common/constants/ingredient-categories';
 import { normalizeSku } from '../../common/utils/sku.util';
+import {
+  toCanonicalStockQty,
+  scaleFactorForUnitChange,
+  canonicalStorageUnit,
+} from '../../common/utils/stock-units';
 import type { ReceiveGoodsDto } from './dto/receive-goods.dto';
 
 interface IdempotencyResult {
@@ -30,9 +35,28 @@ export class ReceivedService {
       throw new BadRequestException('item_id is required');
     }
 
-    const approvedQuantity = dto.quantity_approved ?? dto.quantity;
-    const rejectedQuantity = dto.quantity_rejected ?? 0;
-    const finalTotalCost = dto.total_cost ?? approvedQuantity * dto.unit_cost;
+    const approvedQuantityRaw = dto.quantity_approved ?? dto.quantity;
+    const rejectedQuantityRaw = dto.quantity_rejected ?? 0;
+    const inputUnit = dto.units || 'pcs';
+    const inputUnitCost = Number(dto.unit_cost) || 0;
+
+    // Canonical storage: kg→g, L→ml (qty ×1000, cost ÷1000); pcs unchanged
+    const approvedNorm = toCanonicalStockQty(
+      approvedQuantityRaw,
+      inputUnit,
+      inputUnitCost,
+    );
+    const rejectedNorm = toCanonicalStockQty(
+      rejectedQuantityRaw,
+      inputUnit,
+      inputUnitCost,
+    );
+    const approvedQuantity = approvedNorm.quantity;
+    const rejectedQuantity = rejectedNorm.quantity;
+    const storageUnit = approvedNorm.unit;
+    const unitCost = approvedNorm.unitCost;
+    const finalTotalCost =
+      dto.total_cost ?? approvedQuantity * unitCost;
     const category =
       normalizeIngredientCategory(dto.category) ?? dto.category?.trim();
 
@@ -51,7 +75,7 @@ export class ReceivedService {
       };
     }
 
-    await this.ensureItemExists(itemId, dto.item_name, dto.units, category);
+    await this.ensureItemExists(itemId, dto.item_name, storageUnit, category);
 
     const event = await this.eventStore.appendEvent({
       event_type: 'received',
@@ -63,21 +87,25 @@ export class ReceivedService {
       waste_photo_url: dto.waste_photo_url,
       item_id: itemId,
       quantity: approvedQuantity,
-      unit_cost: dto.unit_cost,
+      unit_cost: unitCost,
       total_cost: finalTotalCost,
       payload: {
         ...(dto.payload && typeof dto.payload === 'object' ? dto.payload : {}),
         item_id: itemId,
         item_name: dto.item_name,
-        units: dto.units,
+        units: storageUnit,
+        units_input: inputUnit,
         category: category ?? null,
-        quantity: dto.quantity,
+        quantity: approvedQuantity,
+        quantity_input: dto.quantity,
         quantity_approved: approvedQuantity,
         quantity_rejected: rejectedQuantity,
         date_received: dto.date_received,
         expiry_date: dto.expiry_date,
-        unit_cost: dto.unit_cost,
+        unit_cost: unitCost,
+        unit_cost_input: inputUnitCost,
         total_cost: finalTotalCost,
+        units_normalized: approvedNorm.converted,
         supplier_name: dto.supplier_name,
         supplier_number: dto.supplier_number,
         supplier_id: dto.supplier_id,
@@ -97,9 +125,9 @@ export class ReceivedService {
           item_name: dto.item_name,
           batch_number: dto.batch_number,
           quantity_wasted: rejectedQuantity,
-          unit_of_measure: dto.units,
-          unit_cost: dto.unit_cost,
-          total_waste_value: rejectedQuantity * dto.unit_cost,
+          unit_of_measure: storageUnit,
+          unit_cost: unitCost,
+          total_waste_value: rejectedQuantity * unitCost,
           waste_type: 'quality_reject',
           waste_reason: dto.waste_reason || 'Rejected on receipt',
           root_cause: 'external',
@@ -111,7 +139,7 @@ export class ReceivedService {
     }
 
     this.logger.log(
-      `GRN: ${approvedQuantity} ${dto.units} of ${dto.item_name}` +
+      `GRN: ${approvedQuantity} ${storageUnit} of ${dto.item_name}` +
         (category ? ` [${category}]` : ''),
     );
 
@@ -176,6 +204,11 @@ export class ReceivedService {
     }
     if (unit && unit !== existing.unit) {
       data.unit = unit;
+      // Scale on-hand when moving kg→g or L→ml so physical stock is unchanged
+      const factor = scaleFactorForUnitChange(existing.unit, unit);
+      if (factor !== 1) {
+        await this.scaleAllProjectionsForItem(id, factor, unit);
+      }
     }
     if (
       normalizedCategory &&
@@ -193,4 +226,44 @@ export class ReceivedService {
       });
     }
   }
+  /**
+   * When Item.unit changes kg→g (×1000) or L→ml (×1000), scale every shop's
+   * InventoryProjection for that SKU. total_value unchanged; avg_unit_cost ÷ factor.
+   */
+  private async scaleAllProjectionsForItem(
+    itemId: string,
+    factor: number,
+    newUnit: string,
+  ): Promise<void> {
+    if (!(factor > 0) || factor === 1) return;
+    const rows = await this.prisma.inventoryProjection.findMany({
+      where: { item_id: itemId },
+    });
+    for (const row of rows) {
+      const prevQty = Number(row.available_stock ?? 0);
+      const prevVal = Number(row.total_value ?? 0);
+      const nextQty = prevQty * factor;
+      let nextAvg: number | undefined;
+      if (nextQty > 0 && prevVal > 0) {
+        nextAvg = prevVal / nextQty;
+      } else if (row.avg_unit_cost != null) {
+        nextAvg = Number(row.avg_unit_cost) / factor;
+      }
+      await this.prisma.inventoryProjection.update({
+        where: {
+          shop_id_item_id: { shop_id: row.shop_id, item_id: itemId },
+        },
+        data: {
+          available_stock: nextQty,
+          ...(nextAvg != null && Number.isFinite(nextAvg)
+            ? { avg_unit_cost: nextAvg }
+            : {}),
+        },
+      });
+      this.logger.log(
+        `Scaled projection ${itemId}@${row.shop_id}: ${prevQty} → ${nextQty} (${newUnit})`,
+      );
+    }
+  }
+
 }

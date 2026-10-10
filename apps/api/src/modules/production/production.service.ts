@@ -1,3 +1,4 @@
+import { quantityInItemUnit, toCanonicalStockQty } from '../../common/utils/stock-units';
 // apps/api/src/modules/production/production.service.ts
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -1011,12 +1012,40 @@ export class ProductionService {
     const shopId = (dto.shop_id || '1').trim() || '1';
     const rawId = dto.raw_item_id.trim();
     const preppedId = dto.prepped_item_id.trim();
-    const original = Number(dto.original_qty);
-    const yielded = Number(dto.yielded_qty);
+    const originalRaw = Number(dto.original_qty);
+    const yieldedRaw = Number(dto.yielded_qty);
+    const dtoUnit = (dto.unit && String(dto.unit).trim()) || undefined;
 
-    if (!(original > 0) || !(yielded > 0)) {
+    if (!(originalRaw > 0) || !(yieldedRaw > 0)) {
       throw new BadRequestException('original_qty and yielded_qty must be > 0');
     }
+    // Validate input ratio before unit conversion (same dimension)
+    if (yieldedRaw > originalRaw) {
+      throw new BadRequestException('yielded_qty cannot exceed original_qty');
+    }
+
+    const inv = await this.prisma.inventoryProjection.findUnique({
+      where: { shop_id_item_id: { shop_id: shopId, item_id: rawId } },
+      include: { item: { select: { name: true, unit: true } } },
+    });
+    if (!inv) {
+      throw new BadRequestException(
+        `Raw item not in inventory for this shop: ${rawId}. Use the exact Item SKU (item_id).`,
+      );
+    }
+    const onHand = Number(inv.available_stock ?? 0);
+    const itemUnit = inv.item?.unit || 'kg';
+    // Align to InventoryProjection denomination (Item.unit)
+    const original = quantityInItemUnit(
+      originalRaw,
+      dtoUnit || itemUnit,
+      itemUnit,
+    );
+    const yielded = quantityInItemUnit(
+      yieldedRaw,
+      dtoUnit || itemUnit,
+      itemUnit,
+    );
     if (yielded > original) {
       throw new BadRequestException('yielded_qty cannot exceed original_qty');
     }
@@ -1030,16 +1059,6 @@ export class ProductionService {
       );
     }
 
-    const inv = await this.prisma.inventoryProjection.findUnique({
-      where: { shop_id_item_id: { shop_id: shopId, item_id: rawId } },
-      include: { item: { select: { name: true, unit: true } } },
-    });
-    if (!inv) {
-      throw new BadRequestException(
-        `Raw item not in inventory for this shop: ${rawId}. Use the exact Item SKU (item_id).`,
-      );
-    }
-    const onHand = Number(inv.available_stock ?? 0);
     if (onHand + 1e-9 < original) {
       throw new BadRequestException(
         `Insufficient raw stock for ${rawId}: need ${original}, have ${onHand}`,

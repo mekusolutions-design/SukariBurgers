@@ -15,6 +15,10 @@ import { RecipeCostingService } from '../recipe/recipe-costing.service';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PosGateway } from './pos.gateway';
+import {
+  quantityInItemUnit,
+  toCanonicalStockQty,
+} from '../../common/utils/stock-units';
 
 interface IdempotencyExisting {
   id: string;
@@ -658,6 +662,16 @@ export class PosService {
     }
   }
 
+
+  /** Item.unit is the denomination of InventoryProjection.available_stock. */
+  private async resolveItemUnit(itemId: string): Promise<string> {
+    const row = await this.prisma.item.findUnique({
+      where: { item_id: itemId },
+      select: { unit: true },
+    });
+    return (row?.unit && String(row.unit).trim()) || 'pcs';
+  }
+
   private async resolveFromMenuAndSelections(
     menu: MenuListItem,
     soldQty: number,
@@ -673,17 +687,22 @@ export class PosService {
         shopId,
         menu.finishedGoodId,
       );
-      return [
-        {
-          item_id: menu.finishedGoodId,
-          item_name: menu.finishedGoodName || menu.finishedGoodId,
-          quantity: (menu.quantityRequired || 1) * soldQty,
-          unit: menu.unit || 'pcs',
-          unit_cost: unitCost,
-          component_key: 'main',
-          component_type: 'FIXED',
-        },
-      ];
+      {
+        const itemUnit = await this.resolveItemUnit(menu.finishedGoodId);
+        const rawQty = (menu.quantityRequired || 1) * soldQty;
+        const qty = quantityInItemUnit(rawQty, menu.unit || itemUnit, itemUnit);
+        return [
+          {
+            item_id: menu.finishedGoodId,
+            item_name: menu.finishedGoodName || menu.finishedGoodId,
+            quantity: qty,
+            unit: itemUnit,
+            unit_cost: unitCost,
+            component_key: 'main',
+            component_type: 'FIXED',
+          },
+        ];
+      }
     }
 
     for (const component of components) {
@@ -694,13 +713,19 @@ export class PosService {
             `Menu ${menu.menuId}: FIXED component ${component.componentKey} has no finished_good_id`,
           );
         }
-        const qty = component.quantityRequired * soldQty;
+        const rawQty = component.quantityRequired * soldQty;
+        const itemUnit = await this.resolveItemUnit(fgId);
+        const qty = quantityInItemUnit(
+          rawQty,
+          component.unit || itemUnit,
+          itemUnit,
+        );
         const unitCost = await this.inventoryUnitCost(shopId, fgId);
         out.push({
           item_id: fgId,
           item_name: component.finishedGoodName || fgId,
           quantity: qty,
-          unit: component.unit || 'pcs',
+          unit: itemUnit,
           unit_cost: unitCost,
           component_key: component.componentKey,
           component_type: 'FIXED',
@@ -719,6 +744,12 @@ export class PosService {
           shopId,
           pick.finished_good_id,
         );
+        const itemUnit = await this.resolveItemUnit(pick.finished_good_id);
+        const pickQty = quantityInItemUnit(
+          pick.quantity,
+          component.unit || itemUnit,
+          itemUnit,
+        );
         out.push({
           item_id: pick.finished_good_id,
           item_name:
@@ -727,8 +758,8 @@ export class PosService {
               (o) => o.finishedGoodId === pick.finished_good_id,
             )?.finishedGoodName ||
             pick.finished_good_id,
-          quantity: pick.quantity,
-          unit: component.unit || 'pcs',
+          quantity: pickQty,
+          unit: itemUnit,
           unit_cost: unitCost,
           component_key: component.componentKey,
           component_type: component.componentType,

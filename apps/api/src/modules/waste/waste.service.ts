@@ -6,6 +6,7 @@ import { EventStoreService } from '../../core/event-store.service';
 import { IdempotencyService } from '../../core/idempotency.service';
 import { RecordWasteDto } from './dto/record-waste.dto';
 import { WasteGateway } from './waste.gateway';
+import { quantityInItemUnit } from '../../common/utils/stock-units';
 import { UnitConversionService } from '../../common/units/unit-conversion.service';
 
 type WasteCause =
@@ -126,6 +127,7 @@ export class WasteService {
         ? asNumber(dto.total_waste_value, 0)
         : null;
 
+    // cost resolve uses input qty; event stores storage qty
     const resolved = await this.resolveWasteCost(
       dto.item_id,
       shopId,
@@ -152,8 +154,11 @@ export class WasteService {
     }
 
     const storageUnit = catalog?.unit || 'pcs';
-    const unitOfMeasure =
-      asString(dto.unit_of_measure) || storageUnit || 'pcs';
+    const inputUom = asString(dto.unit_of_measure) || storageUnit || 'pcs';
+    // Align waste qty with InventoryProjection denomination (Item.unit)
+    const qtyInStorage = quantityInItemUnit(qty, inputUom, storageUnit);
+    const unitOfMeasure = storageUnit;
+    const qtyStored = qtyInStorage;
 
     // Value uses storage-unit qty × unit cost (cost is per storage unit)
     if (totalValue == null || totalValue <= 0) {
@@ -179,7 +184,7 @@ export class WasteService {
       batch_number: dto.batch_number,
       waste_reason: dto.waste_reason,
       item_id: dto.item_id,
-      quantity: qty,
+      quantity: qtyStored,
       unit_cost: unitCost ?? 0,
       total_cost: totalValue ?? 0,
       payload: {
@@ -190,7 +195,7 @@ export class WasteService {
         unit_of_measure: unitOfMeasure,
         unit_cost: unitCost ?? 0,
         total_waste_value: totalValue ?? 0,
-        quantity_wasted: qty,
+        quantity_wasted: qtyStored,
         recorded_at: recordedAt,
       },
     });
