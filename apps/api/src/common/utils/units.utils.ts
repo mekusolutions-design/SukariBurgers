@@ -87,3 +87,24 @@ export function portionsFromStock(
   }
   return Math.floor(availableInNeedUnits / needPerPortion);
 }
+
+
+/**
+ * Spec change 3: when converting kg→g or L→ml for storage/math,
+ * scale quantity ×1000 and unit cost ÷1000 so line value is unchanged.
+ * Countable units (pcs, pkts, …) are returned unchanged.
+ */
+export function normalizeStockQtyCost(
+  quantity: number,
+  unit: string,
+  unitCost: number,
+): { quantity: number; unit: string; unitCost: number } {
+  const u = normalizeUnit(unit);
+  if (u === 'kg') {
+    return { quantity: quantity * 1000, unit: 'g', unitCost: unitCost / 1000 };
+  }
+  if (u === 'l' || u === 'liter' || u === 'litre') {
+    return { quantity: quantity * 1000, unit: 'ml', unitCost: unitCost / 1000 };
+  }
+  return { quantity, unit: u || unit, unitCost };
+}

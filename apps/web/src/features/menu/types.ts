@@ -1,5 +1,5 @@
 // apps/web/src/features/menu/types.ts
-export type ComponentType = "FIXED" | "CHOICE" | "MULTI_CHOICE";
+export type ComponentType = "FIXED" | "CHOICE" | "MULTI_CHOICE" | "INVENTORY";
 
 export interface ChoiceOption {
   finishedGoodId: string;

@@ -13,9 +13,30 @@ import type { CreateMenuInput } from "./schema";
 
 function asComponentType(value: unknown): ComponentType {
   const t = String(value ?? "FIXED").toUpperCase();
-  if (t === "CHOICE" || t === "MULTI_CHOICE") return t;
+  if (t === "CHOICE" || t === "MULTI_CHOICE" || t === "INVENTORY") return t as ComponentType;
   return "FIXED";
 }
+
+/** De-dupe component lines by finishedGoodId / componentKey (display + client state). */
+function dedupeLines(lines: MenuComponentLine[]): MenuComponentLine[] {
+  const seenIds = new Set<string>();
+  const seenKeys = new Set<string>();
+  const out: MenuComponentLine[] = [];
+  for (const line of lines) {
+    const id = (line.finishedGoodId || "").trim();
+    const key = (line.componentKey || "").trim();
+    if (id) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+    } else if (key && seenKeys.has(key)) {
+      continue;
+    }
+    if (key) seenKeys.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
 
 function toOption(raw: Record<string, unknown>): ChoiceOption {
   return {
@@ -79,7 +100,7 @@ function toLine(raw: Record<string, unknown>, idx: number): MenuComponentLine {
 
 function toMenuItem(raw: Record<string, unknown>): MenuItem {
   const linesRaw = asArray<Record<string, unknown>>(raw.lines);
-  let lines = linesRaw.map((row, idx) => toLine(row, idx));
+  let lines = dedupeLines(linesRaw.map((row, idx) => toLine(row, idx)));
 
   if (lines.length === 0 && (raw.finishedGoodId || raw.finished_good_id)) {
     lines = [

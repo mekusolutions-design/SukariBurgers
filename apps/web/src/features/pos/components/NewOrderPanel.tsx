@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
+import { dedupeMenuLines } from "./dedupeMenuLines";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 
@@ -61,7 +62,7 @@ function selectionTotal(selections: CartSelection[], componentKey: string) {
 
 function validateLine(line: CartLine): string | null {
   for (const component of line.menu.lines) {
-    if (component.componentType === "FIXED") continue;
+    if (component.componentType === "FIXED" || component.componentType === "INVENTORY") continue;
     const need = requiredUnits(component, line.quantity);
     const got = selectionTotal(line.selections, component.componentKey);
     if (got !== need) {
@@ -736,15 +737,22 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
               />
             </div>
 
-            {activeMenu.lines.map((component) => {
-              if (component.componentType === "FIXED") {
+            {dedupeMenuLines(activeMenu.lines).map((component) => {
+              if (
+                component.componentType === "FIXED" ||
+                component.componentType === "INVENTORY"
+              ) {
                 return (
                   <div
                     key={component.componentKey}
                     className="rounded-md border border-border px-3 py-2 text-sm"
                   >
                     <div className="flex items-center gap-2">
-                      <Badge tone="neutral">Fixed</Badge>
+                      <Badge tone="neutral">
+                        {component.componentType === "INVENTORY"
+                          ? "Inventory"
+                          : "Fixed"}
+                      </Badge>
                       <span className="font-medium">
                         {component.finishedGoodName ||
                           component.finishedGoodId}

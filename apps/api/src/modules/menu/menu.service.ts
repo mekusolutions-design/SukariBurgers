@@ -17,7 +17,7 @@ interface IdempotencyResult {
   existing: { id: string; payload?: unknown } | null;
 }
 
-export type ComponentType = 'FIXED' | 'CHOICE' | 'MULTI_CHOICE';
+export type ComponentType = 'FIXED' | 'CHOICE' | 'MULTI_CHOICE' | 'INVENTORY';
 
 export interface ChoiceOption {
   finishedGoodId: string;
@@ -152,8 +152,10 @@ function asNumber(value: unknown, fallback = 0): number {
 }
 
 function asComponentType(value: unknown): ComponentType {
-  const t = asString(value, 'FIXED').toUpperCase();
-  if (t === 'CHOICE' || t === 'MULTI_CHOICE') return t;
+  const t = String(value ?? 'FIXED').toUpperCase();
+  if (t === 'CHOICE' || t === 'MULTI_CHOICE' || t === 'INVENTORY') {
+    return t as ComponentType;
+  }
   return 'FIXED';
 }
 
@@ -175,6 +177,10 @@ function normalizeLines(dto: CreateMenuDto): NormalizedLine[] {
   if (Array.isArray(dto.lines) && dto.lines.length > 0) {
     return dto.lines.map((line, idx) => {
       const type = (line.component_type ?? 'FIXED') as ComponentType;
+      const fgId =
+        line.finished_good_id ||
+        (line as { inventory_item_id?: string }).inventory_item_id ||
+        undefined;
       const qty = line.quantity_required ?? 1;
       const isChoice = type === 'CHOICE' || type === 'MULTI_CHOICE';
       const minSelect =
@@ -666,7 +672,7 @@ export class MenuService {
       let requiresSelection = false;
 
       for (const draft of lineDrafts) {
-        if (draft.componentType === 'FIXED') {
+        if (draft.componentType === 'FIXED' || draft.componentType === 'INVENTORY') {
           const finishedGoodId = draft.finishedGoodId;
           if (!finishedGoodId) continue;
 
@@ -677,7 +683,7 @@ export class MenuService {
 
           lines.push({
             componentKey: draft.componentKey,
-            componentType: 'FIXED',
+            componentType: draft.componentType === 'INVENTORY' ? 'INVENTORY' : 'FIXED',
             finishedGoodId,
             finishedGoodName: draft.finishedGoodName,
             finishedGoodCategoryId: null,

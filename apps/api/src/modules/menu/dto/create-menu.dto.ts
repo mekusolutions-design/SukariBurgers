@@ -1,7 +1,7 @@
 // apps/api/src/modules/menu/dto/create-menu.dto.ts
 import { z } from 'zod';
 
-export const ComponentTypeEnum = z.enum(['FIXED', 'CHOICE', 'MULTI_CHOICE']);
+export const ComponentTypeEnum = z.enum(['FIXED', 'CHOICE', 'MULTI_CHOICE', 'INVENTORY']);
 
 export const MenuComponentLineSchema = z
   .object({
