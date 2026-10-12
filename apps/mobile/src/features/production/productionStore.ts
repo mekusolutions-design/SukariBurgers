@@ -7,6 +7,7 @@ import { useOfflineStore } from '../offline/offlineStore';
 
 export type ProductionItem = {
   production_id?: string;
+  recipe_id?: string;
   item_id: string;
   item_name: string;
   planned_quantity: number;
@@ -20,6 +21,8 @@ export type ProductionItem = {
 };
 
 type StartProductionInput = {
+  /** Required by Nest StartProductionSchema */
+  recipe_id: string;
   item_id: string;
   item_name: string;
   planned_quantity: number;
@@ -100,6 +103,7 @@ export const useProductionStore = create<ProductionState>()(
 
         try {
           const res = await apiClient.post('/production/start', {
+            recipe_id: input.recipe_id,
             item_id: input.item_id,
             item_name: input.item_name,
             planned_quantity: input.planned_quantity,
@@ -121,6 +125,7 @@ export const useProductionStore = create<ProductionState>()(
             item_name: input.item_name,
             planned_quantity: input.planned_quantity,
             notes: input.notes,
+            recipe_id: input.recipe_id,
           });
 
           try {
@@ -129,6 +134,7 @@ export const useProductionStore = create<ProductionState>()(
               endpoint: '/production/start',
               method: 'POST',
               payload: {
+                recipe_id: input.recipe_id,
                 item_id: input.item_id,
                 item_name: input.item_name,
                 planned_quantity: input.planned_quantity,

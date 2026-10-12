@@ -18,10 +18,14 @@ import {
   type ClosingStockLine,
 } from '../../api/closingStockApi';
 import { colors, spacing, typography } from '../../lib/theme';
+import { useRole } from '../../hooks/useRole';
 
 const DEFAULT_SHOP_ID = '1';
 
 export default function ClosingStockScreen() {
+  const { isAdmin, isManager } = useRole();
+  /** Matches API POST /kitchen/closing-stock @Roles('MANAGER','ADMIN') */
+  const canSubmit = isAdmin || isManager;
   const [lines, setLines] = useState<ClosingStockLine[]>([]);
   const [counts, setCounts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -61,6 +65,13 @@ export default function ClosingStockScreen() {
   ).length;
 
   async function handleSubmit() {
+    if (!canSubmit) {
+      Alert.alert(
+        'Not allowed',
+        'Only managers and administrators can submit closing stock.',
+      );
+      return;
+    }
     const payload = lines
       .map((l) => {
         const raw = (counts[l.itemId] ?? '').trim();
@@ -109,6 +120,11 @@ export default function ClosingStockScreen() {
       </Text>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      {!canSubmit ? (
+        <Text style={styles.banner}>
+          View only — only managers and admins can submit closing stock.
+        </Text>
+      ) : null}
 
       <FlatList
         data={lines}
@@ -131,6 +147,7 @@ export default function ClosingStockScreen() {
             </View>
             <TextInput
               style={styles.input}
+              editable={canSubmit}
               keyboardType="decimal-pad"
               placeholder="Counted"
               placeholderTextColor={colors.textSecondary}
@@ -143,20 +160,22 @@ export default function ClosingStockScreen() {
         )}
       />
 
-      <TouchableOpacity
-        style={[
-          styles.submit,
-          (submitting || completedCount === 0) && styles.submitDisabled,
-        ]}
-        onPress={handleSubmit}
-        disabled={submitting || completedCount === 0}
-      >
-        {submitting ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.submitText}>Submit closing stock</Text>
-        )}
-      </TouchableOpacity>
+      {canSubmit ? (
+        <TouchableOpacity
+          style={[
+            styles.submit,
+            (submitting || completedCount === 0) && styles.submitDisabled,
+          ]}
+          onPress={handleSubmit}
+          disabled={submitting || completedCount === 0}
+        >
+          {submitting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.submitText}>Submit closing stock</Text>
+          )}
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -186,6 +205,12 @@ const styles = StyleSheet.create({
   error: {
     color: colors.danger,
     marginBottom: spacing.sm,
+  },
+  banner: {
+    ...typography.small,
+    color: colors.warning,
+    marginBottom: spacing.sm,
+    fontWeight: '600',
   },
   hint: {
     ...typography.body,

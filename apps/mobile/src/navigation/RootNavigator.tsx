@@ -24,6 +24,9 @@ import PosOrderScreen from '../screens/pos/PosOrderScreen';
 import BarcodeScannerScreen from '../screens/scanning/BarcodeScannerScreen';
 import RecordWasteScreen from '../screens/waste/RecordWasteScreen';
 import ClosingStockScreen from '../screens/kitchen/ClosingStockScreen';
+import PrePrepScreen from '../screens/kitchen/PrePrepScreen';
+import ApprovalsScreen from '../screens/approvals/ApprovalsScreen';
+import ManagerDashboardScreen from '../screens/dashboard/ManagerDashboardScreen';
 import NotificationSettings from '../screens/notifications/NotificationSettings';
 import ProfileScreen from '../screens/profile/ProfileScreen';
 import LogoutButton from '../components/common/LogoutButton';
@@ -158,6 +161,21 @@ export default function RootNavigator() {
         name="ClosingStock"
         component={ClosingStockScreen}
         options={{ title: 'Closing Stock Count' }}
+      />
+      <Stack.Screen
+        name="PrePrep"
+        component={PrePrepScreen}
+        options={{ title: 'Pre-prep' }}
+      />
+      <Stack.Screen
+        name="ManagerDashboard"
+        component={ManagerDashboardScreen}
+        options={{ title: 'Manager Dashboard' }}
+      />
+      <Stack.Screen
+        name="Approvals"
+        component={ApprovalsScreen}
+        options={{ title: 'Approvals' }}
       />
       <Stack.Screen
         name="Profile"

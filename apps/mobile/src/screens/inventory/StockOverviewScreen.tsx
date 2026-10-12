@@ -23,18 +23,23 @@ import type { RootNavigationProp } from '../../types/navigation';
 
 function formatUnit(unit?: string | null): string {
   if (!unit || !String(unit).trim()) return 'units';
+
   const u = String(unit).trim();
+
   if (/^\d+(\.\d+)?$/.test(u)) return 'units';
+
   return u;
 }
 
 function formatQty(n: number | null | undefined): string {
   if (n === null || n === undefined || Number.isNaN(n)) return '0';
+
   return Number.isInteger(n) ? String(n) : n.toFixed(2);
 }
 
 function formatKes(n: number | null | undefined): string {
   if (n === null || n === undefined || Number.isNaN(n)) return '—';
+
   return `KES ${n.toLocaleString('en-KE', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
@@ -43,12 +48,16 @@ function formatKes(n: number | null | undefined): string {
 
 function liveDaysToExpiry(item: StockItem): number | null {
   const next = item.next_expiry_date ?? item.closest_expiry_date;
+
   if (next != null && next !== '') {
     const end = new Date(next);
+
     if (!Number.isNaN(end.getTime())) {
       const today = new Date();
+
       today.setHours(0, 0, 0, 0);
       end.setHours(0, 0, 0, 0);
+
       return Math.round(
         (end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
       );
@@ -56,9 +65,11 @@ function liveDaysToExpiry(item: StockItem): number | null {
   }
 
   const days = item.days_to_expiry_min;
+
   if (days === null || days === undefined || Number.isNaN(Number(days))) {
     return null;
   }
+
   return Number(days);
 }
 
@@ -72,6 +83,7 @@ function getUrgency(item: StockItem): Urgency {
   if (days !== null && days <= 0) return 'expired';
   if (days !== null && days <= 7) return 'critical';
   if (stock <= 0 || stock <= reorder) return 'low';
+
   return 'ok';
 }
 
@@ -82,16 +94,21 @@ function sortStock(items: StockItem[]): StockItem[] {
     low: 2,
     ok: 3,
   };
+
   return [...items].sort((a, b) => {
-    const d = rank[getUrgency(a)] - rank[getUrgency(b)];
-    if (d !== 0) return d;
+    const urgencyDifference =
+      rank[getUrgency(a)] - rank[getUrgency(b)];
+
+    if (urgencyDifference !== 0) return urgencyDifference;
+
     return (a.name || '').localeCompare(b.name || '');
   });
 }
 
 export default function StockOverviewScreen() {
   const navigation = useNavigation<RootNavigationProp>();
-  const { isKitchen, isPos, isManager, canUsePos } = useRole();
+
+  const { isKitchen, isPos, isManager, isAdmin } = useRole();
 
   const {
     stock,
@@ -115,6 +132,7 @@ export default function StockOverviewScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+
     try {
       await fetchStock(page);
     } finally {
@@ -125,14 +143,23 @@ export default function StockOverviewScreen() {
   const sorted = useMemo(() => sortStock(stock), [stock]);
 
   const summary = useMemo(() => {
-    const low = stock.filter(
-      (i) => getUrgency(i) === 'low' || getUrgency(i) === 'expired',
-    ).length;
-    const expiring = stock.filter((i) => {
-      const d = liveDaysToExpiry(i);
-      return d !== null && d > 0 && d <= 7;
+    const low = stock.filter((item) => {
+      const urgency = getUrgency(item);
+
+      return urgency === 'low' || urgency === 'expired';
     }).length;
-    const value = stock.reduce((s, i) => s + (i.total_value || 0), 0);
+
+    const expiring = stock.filter((item) => {
+      const days = liveDaysToExpiry(item);
+
+      return days !== null && days > 0 && days <= 7;
+    }).length;
+
+    const value = stock.reduce(
+      (sum, item) => sum + (item.total_value || 0),
+      0,
+    );
+
     return {
       totalItems: total,
       pageCount: stock.length,
@@ -168,8 +195,12 @@ export default function StockOverviewScreen() {
       leftBorder = colors.warning;
     } else if (urgency === 'low') {
       expiryLabel = days !== null ? `${days} days` : 'No expiry';
+
       badgeLabel =
-        (item.available_stock ?? 0) <= 0 ? 'Out of stock' : 'Low stock';
+        (item.available_stock ?? 0) <= 0
+          ? 'Out of stock'
+          : 'Low stock';
+
       badgeBg = '#FFE5CC';
       badgeText = colors.warning;
       leftBorder = colors.warning;
@@ -185,11 +216,13 @@ export default function StockOverviewScreen() {
             <Text style={styles.itemName} numberOfLines={1}>
               {item.name || item.id}
             </Text>
+
             <Text style={styles.sku}>
               SKU: {item.id}
               {item.category ? ` · ${item.category}` : ''}
             </Text>
           </View>
+
           {badgeLabel ? (
             <View style={[styles.badge, { backgroundColor: badgeBg }]}>
               <Text style={[styles.badgeText, { color: badgeText }]}>
@@ -202,12 +235,15 @@ export default function StockOverviewScreen() {
         <View style={styles.cardMid}>
           <View>
             <Text style={styles.qtyLabel}>On hand</Text>
+
             <Text style={styles.qtyValue}>
               {qty} <Text style={styles.qtyUnit}>{unit}</Text>
             </Text>
           </View>
+
           <View style={styles.alignEnd}>
             <Text style={styles.qtyLabel}>Expiry</Text>
+
             <Text
               style={[
                 styles.expiryValue,
@@ -221,7 +257,9 @@ export default function StockOverviewScreen() {
         </View>
 
         <View style={styles.cardBottom}>
-          <Text style={styles.valueText}>{formatKes(item.total_value)}</Text>
+          <Text style={styles.valueText}>
+            {formatKes(item.total_value)}
+          </Text>
         </View>
       </View>
     );
@@ -231,6 +269,7 @@ export default function StockOverviewScreen() {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
+
         <Text style={styles.loadingText}>Loading stock...</Text>
       </View>
     );
@@ -239,6 +278,7 @@ export default function StockOverviewScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.screenTitle}>Stock Overview</Text>
+
       <Text style={styles.screenSub}>
         Live inventory · {STOCK_PAGE_SIZE} per page · pull to refresh
       </Text>
@@ -248,6 +288,7 @@ export default function StockOverviewScreen() {
           <Text style={styles.summaryNum}>{summary.totalItems}</Text>
           <Text style={styles.summaryLbl}>Items</Text>
         </View>
+
         <View style={styles.summaryChip}>
           <Text
             style={[
@@ -257,8 +298,10 @@ export default function StockOverviewScreen() {
           >
             {summary.low}
           </Text>
+
           <Text style={styles.summaryLbl}>Low / out</Text>
         </View>
+
         <View style={styles.summaryChip}>
           <Text
             style={[
@@ -268,12 +311,15 @@ export default function StockOverviewScreen() {
           >
             {summary.expiring}
           </Text>
+
           <Text style={styles.summaryLbl}>Expiring</Text>
         </View>
+
         <View style={[styles.summaryChip, { flex: 1.2 }]}>
           <Text style={styles.summaryNumSmall} numberOfLines={1}>
             {formatKes(summary.value)}
           </Text>
+
           <Text style={styles.summaryLbl}>Page value</Text>
         </View>
       </View>
@@ -281,6 +327,7 @@ export default function StockOverviewScreen() {
       {error ? (
         <View style={styles.center}>
           <Text style={styles.errorText}>{error}</Text>
+
           <TouchableOpacity
             style={styles.retryButton}
             onPress={() => fetchStock(page)}
@@ -295,11 +342,15 @@ export default function StockOverviewScreen() {
             renderItem={renderItem}
             keyExtractor={(item) => item.id || item.name}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+              />
             }
             ListEmptyComponent={
               <View style={styles.emptyWrap}>
                 <Text style={styles.emptyTitle}>No stock yet</Text>
+
                 <Text style={styles.emptySub}>
                   Receive goods to see items here
                 </Text>
@@ -320,9 +371,11 @@ export default function StockOverviewScreen() {
             >
               <Text style={styles.pagerBtnText}>Previous</Text>
             </TouchableOpacity>
+
             <Text style={styles.pagerLabel}>
               Page {page} of {totalPages} · {total} total
             </Text>
+
             <TouchableOpacity
               style={[
                 styles.pagerBtn,
@@ -340,12 +393,16 @@ export default function StockOverviewScreen() {
       <View style={styles.actions}>
         {(isKitchen || isManager) && (
           <TouchableOpacity
-            style={[styles.actionButton, { backgroundColor: colors.primary }]}
+            style={[
+              styles.actionButton,
+              { backgroundColor: colors.primary },
+            ]}
             onPress={() => navigation.navigate('Receive')}
           >
             <Text style={styles.actionButtonText}>+ Receive Goods</Text>
           </TouchableOpacity>
         )}
+
         {(isKitchen || isManager) && (
           <TouchableOpacity
             style={[
@@ -360,6 +417,7 @@ export default function StockOverviewScreen() {
             <Text style={styles.actionButtonText}>+ Request Refill</Text>
           </TouchableOpacity>
         )}
+
         {(isKitchen || isManager) && (
           <TouchableOpacity
             style={[
@@ -371,9 +429,59 @@ export default function StockOverviewScreen() {
             ]}
             onPress={() => navigation.navigate('ClosingStock')}
           >
-            <Text style={styles.actionButtonText}>Closing Stock Count</Text>
+            <Text style={styles.actionButtonText}>
+              Closing Stock Count
+            </Text>
           </TouchableOpacity>
         )}
+
+        {(isKitchen || isManager) && (
+          <TouchableOpacity
+            style={[
+              styles.actionButton,
+              {
+                backgroundColor: colors.primaryDark,
+                marginTop: spacing.sm,
+              },
+            ]}
+            onPress={() => navigation.navigate('PrePrep')}
+          >
+            <Text style={styles.actionButtonText}>Pre-prep</Text>
+          </TouchableOpacity>
+        )}
+
+        {(isManager || isAdmin) && (
+          <TouchableOpacity
+            style={[
+              styles.actionButton,
+              {
+                backgroundColor: colors.primary,
+                marginTop: spacing.sm,
+              },
+            ]}
+            onPress={() => navigation.navigate('Approvals')}
+          >
+            <Text style={styles.actionButtonText}>Approvals</Text>
+          </TouchableOpacity>
+        )}
+
+        {(isManager || isAdmin) && (
+          <TouchableOpacity
+            style={[
+              styles.actionButton,
+              {
+                backgroundColor: colors.primaryDark,
+                marginTop: spacing.sm,
+              },
+            ]}
+            onPress={() => navigation.navigate('ManagerDashboard')}
+          >
+            <Text style={styles.actionButtonText}>
+              Manager dashboard
+            </Text>
+          </TouchableOpacity>
+        )}
+
         {(isPos || isManager) && (
           <TouchableOpacity
             style={[

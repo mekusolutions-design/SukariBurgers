@@ -1,0 +1,9 @@
+{
+  "name": "mobile-test-scripts",
+  "private": true,
+  "scripts": {
+    "test": "node --test src/__tests__/*.test.mjs",
+    "test:parity": "node --test src/__tests__/parityHelpers.test.mjs",
+    "test:all-local": "node --test src/__tests__/*.test.mjs ../../api/test/mobile-parity*.test.mjs"
+  }
+}

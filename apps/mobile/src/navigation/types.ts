@@ -42,6 +42,9 @@ export type RootStackParamList = {
   Profile: undefined;
 
   ClosingStock: undefined;
+  PrePrep: undefined;
+  ManagerDashboard: undefined;
+  Approvals: undefined;
 };
 
 export type ScreenProps<T extends keyof RootStackParamList> =

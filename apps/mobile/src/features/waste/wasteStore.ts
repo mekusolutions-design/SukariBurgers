@@ -10,7 +10,9 @@ export type RecordWastePayload = {
     | 'finished_goods'
     | 'refill'
     | 'pos'
-    | 'manual';
+    | 'inventory'
+    | 'kitchen'
+    | 'manual'; // mapped to kitchen on POST for Nest RecordWasteSchema
   item_id: string;
   item_name: string;
   batch_number?: string;
@@ -57,7 +59,13 @@ export const useWasteStore = create<WasteState>((set) => ({
     const idempotencyKey = `waste-${payload.module_source}-${payload.item_id}-${payload.quantity_wasted}-${payload.waste_reason}`;
 
     try {
-      const res = await apiClient.post('/waste', payload, {
+      const res = await apiClient.post('/waste/record', {
+        ...payload,
+        module_source:
+          payload.module_source === 'manual'
+            ? 'kitchen'
+            : payload.module_source,
+      }, {
         headers: { 'Idempotency-Key': idempotencyKey },
       });
 
@@ -76,9 +84,15 @@ export const useWasteStore = create<WasteState>((set) => ({
       if (isNetworkError) {
         await useOfflineStore.getState().addAction({
           module: 'waste',
-          endpoint: '/waste',
+          endpoint: '/waste/record',
           method: 'POST',
-          payload,
+          payload: {
+            ...payload,
+            module_source:
+              payload.module_source === 'manual'
+                ? 'kitchen'
+                : payload.module_source,
+          },
           idempotencyKey,
         });
 
