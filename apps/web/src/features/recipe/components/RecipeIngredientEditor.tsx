@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useDebounce } from "@/hooks/use-debounce";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -45,13 +46,22 @@ export function RecipeIngredientsEditor({
 }) {
   const [pickerIndex, setPickerIndex] = useState<number | null>(null);
 
+  const [invSearch, setInvSearch] = useState("");
+  const debouncedInvSearch = useDebounce(invSearch, 300);
+
   const stockQuery = useQuery({
-    queryKey: ["inventory", "recipe-ingredient-picker", shopId],
+    queryKey: [
+      "inventory",
+      "recipe-ingredient-picker",
+      shopId,
+      debouncedInvSearch,
+    ],
     queryFn: () =>
       inventoryApi.list({
         shopId,
         page: 1,
-        pageSize: 200,
+        pageSize: 50,
+        search: debouncedInvSearch.trim() || undefined,
       }),
   });
 
@@ -256,6 +266,10 @@ export function RecipeIngredientsEditor({
                   selectedIds={row.rawItemId ? [row.rawItemId] : []}
                   mode="single"
                   isLoading={stockQuery.isLoading}
+                  serverSearch
+                  searchValue={invSearch}
+                  onSearchChange={setInvSearch}
+                  totalAvailable={stockQuery.data?.total}
                   emptyTitle="No inventory rows"
                   emptyDescription="Receive goods first, then link ingredients."
                   onChange={(ids) => {

@@ -142,10 +142,10 @@ export class KitchenController {
 
   @Post('closing-stock')
   @HttpCode(HttpStatus.CREATED)
-  @Roles('KITCHEN', 'MANAGER', 'ADMIN')
+  @Roles('MANAGER', 'ADMIN')
   @ApiOperation({
     summary:
-      'Submit closing stock count — writes reconciliation event for accuracy + variance',
+      'Submit closing stock count — ADMIN/MANAGER only; writes reconciliation event for accuracy + variance',
   })
   @UsePipes(new ZodValidationPipe(SubmitClosingStockSchema))
   async submitClosingStock(

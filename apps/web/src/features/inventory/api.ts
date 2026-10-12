@@ -16,6 +16,8 @@ export interface InventoryListParams {
   status?: string;
   page?: number;
   pageSize?: number;
+  /** When true, include Finished Goods category rows (default API: false). */
+  includeFinished?: boolean;
 }
 
 export interface InventorySummaryStats {
@@ -133,6 +135,7 @@ export const inventoryApi = {
           page,
           pageSize,
           limit: pageSize,
+          includeFinished: params.includeFinished ? true : undefined,
         })}`,
       );
 

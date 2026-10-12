@@ -19,3 +19,4 @@ export * from "./KpiCard";
 export * from "./StatCard";
 export * from "./PageSection";
 export * from "./ConfirmDialog";
+export { SearchableSelect } from "./SearchableSelect";

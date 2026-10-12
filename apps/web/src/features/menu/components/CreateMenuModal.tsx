@@ -7,14 +7,17 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { SearchableSelect } from "@/components/ui/SearchableSelect";
 import { Alert } from "@/components/ui/Alert";
 import { ApiError } from "@/lib/api/errors";
 import { useToast } from "@/providers/ToastProvider";
 import { useAuthStore } from "@/store/auth";
 import { canEditMenu } from "@/lib/permissions";
 import { menuApi } from "../api";
+import { inventoryApi } from "@/features/inventory/api";
 import { createMenuSchema, type CreateMenuInput } from "../schema";
 import { InventorySkuPicker } from "@/components/inventory/InventorySkuPicker";
+import { useDebounce } from "@/hooks/use-debounce";
 
 type LineKind = "FIXED" | "CHOICE";
 /** How CHOICE options are sourced */
@@ -85,6 +88,41 @@ export function CreateMenuModal({
     queryFn: () => menuApi.listFinishedGoodCategories(),
     enabled: open,
   });
+
+  /** Server-side inventory search for CHOICE → inventory select (not finished-goods list). */
+  const [invSearch, setInvSearch] = useState("");
+  const debouncedInvSearch = useDebounce(invSearch, 300);
+  const needsInventoryPicker = lines.some(
+    (l) => l.kind === "CHOICE" && l.choice_source === "inventory",
+  );
+  const invQuery = useQuery({
+    queryKey: [
+      "inventory",
+      "menu-choice-picker",
+      shopId,
+      debouncedInvSearch,
+    ],
+    queryFn: () =>
+      inventoryApi.list({
+        shopId,
+        page: 1,
+        pageSize: 50,
+        search: debouncedInvSearch.trim() || undefined,
+      }),
+    enabled: open && needsInventoryPicker,
+  });
+
+  const inventorySkuOptions = useMemo(
+    () =>
+      (invQuery.data?.items ?? []).map((item) => ({
+        itemId: item.itemId,
+        name: item.name,
+        unit: item.unit,
+        availableStock: item.availableStock,
+        category: item.category ?? null,
+      })),
+    [invQuery.data?.items],
+  );
 
   const hasFinishedGoods = (fgQuery.data?.length ?? 0) > 0;
 
@@ -237,7 +275,7 @@ export function CreateMenuModal({
       open={open}
       onOpenChange={onOpenChange}
       title="Add menu item"
-      description="FIXED = one finished good. CHOICE = category pool or inventory select (multiple SKUs)."
+      description="FIXED = one finished good (searchable). CHOICE = category pool or inventory select — open each dropdown and type to search."
     >
       <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1">
         {error ? <Alert tone="danger" title="Could not save" description={error} /> : null}
@@ -246,7 +284,7 @@ export function CreateMenuModal({
           <Alert
             tone="warning"
             title="No finished goods yet"
-            description="Create a recipe / produce FG stock first. FIXED and Inventory Select only list finished goods — not raw materials."
+            description="Create a recipe / produce FG stock first. FIXED lines need finished goods. Inventory select uses the inventory list (with search)."
           />
         ) : null}
 
@@ -260,8 +298,41 @@ export function CreateMenuModal({
             <Input value={menuCode} onChange={(e) => setMenuCode(e.target.value)} placeholder="MENU-001" />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-ink-muted">POS category</label>
-            <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Combos" />
+            <label className="mb-1 block text-xs text-ink-muted">POS category / section</label>
+            <SearchableSelect
+              value={category}
+              onValueChange={setCategory}
+              options={[
+                { value: "Combos", label: "Combos" },
+                { value: "Mains", label: "Mains" },
+                { value: "Sides", label: "Sides" },
+                { value: "Drinks", label: "Drinks" },
+                { value: "Desserts", label: "Desserts" },
+                { value: "Breakfast", label: "Breakfast" },
+                { value: "Specials", label: "Specials" },
+              ].concat(
+                category &&
+                  ![
+                    "Combos",
+                    "Mains",
+                    "Sides",
+                    "Drinks",
+                    "Desserts",
+                    "Breakfast",
+                    "Specials",
+                  ].includes(category)
+                  ? [{ value: category, label: category }]
+                  : [],
+              )}
+              placeholder="Select section…"
+              searchPlaceholder="Search section…"
+            />
+            <Input
+              className="mt-2"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              placeholder="Or type a custom section name"
+            />
           </div>
           <div>
             <label className="mb-1 block text-xs text-ink-muted">Selling price (KES)</label>
@@ -331,17 +402,20 @@ export function CreateMenuModal({
               <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                 <div className="md:col-span-2">
                   <label className="mb-1 block text-xs text-ink-muted">Finished good</label>
-                  <Select
+                  <SearchableSelect
                     value={line.finished_good_id}
                     onValueChange={(v) => {
-                      const fg = fgById.get(v);
+                      const id = v === "__empty" ? "" : v;
+                      const fg = fgById.get(id);
                       setLine(index, {
-                        finished_good_id: v,
+                        finished_good_id: id,
                         finished_good_name: fg?.name ?? "",
                         unit: fg?.unit ?? line.unit,
                       });
                     }}
                     options={fgOptions}
+                    placeholder="Select finished good…"
+                    searchPlaceholder="Search name or SKU…"
                   />
                 </div>
                 <div>
@@ -397,10 +471,16 @@ export function CreateMenuModal({
                 {line.choice_source === "category" ? (
                   <div>
                     <label className="mb-1 block text-xs text-ink-muted">Finished-good category</label>
-                    <Select
+                    <SearchableSelect
                       value={line.finished_good_category_id}
-                      onValueChange={(v) => setLine(index, { finished_good_category_id: v })}
+                      onValueChange={(v) =>
+                        setLine(index, {
+                          finished_good_category_id: v === "__empty" ? "" : v,
+                        })
+                      }
                       options={categoryOptions}
+                      placeholder="Select choice pool…"
+                      searchPlaceholder="Search category…"
                     />
                     {(catQuery.data?.length ?? 0) === 0 ? (
                       <p className="mt-1 text-xs text-ink-muted">
@@ -411,22 +491,23 @@ export function CreateMenuModal({
                 ) : (
                   <div>
                     <label className="mb-1 block text-xs font-medium text-ink-muted">
-                      Inventory select — finished-good SKUs
+                      Inventory select — stock SKUs
                     </label>
+                    <p className="mb-2 text-xs text-ink-muted">
+                      Options load from Inventory (GET /inventory), with server search — not the finished-goods list.
+                    </p>
                     <InventorySkuPicker
-                      items={(fgQuery.data ?? []).map((fg) => ({
-                        itemId: fg.itemId,
-                        name: fg.name,
-                        unit: fg.unit,
-                        availableStock: fg.availableStock,
-                        category: fg.category ?? null,
-                      }))}
+                      items={inventorySkuOptions}
                       selectedIds={line.option_item_ids}
                       mode="multi"
-                      isLoading={fgQuery.isLoading}
-                      emptyTitle="No finished goods"
-                      emptyDescription="Produce or categorize finished goods before linking CHOICE options."
+                      isLoading={invQuery.isLoading}
+                      emptyTitle="No inventory SKUs"
+                      emptyDescription="Receive goods or clear the search to see stock items for this shop."
                       onChange={(ids) => setLine(index, { option_item_ids: ids })}
+                      searchValue={invSearch}
+                      onSearchChange={setInvSearch}
+                      serverSearch
+                      totalAvailable={invQuery.data?.total}
                     />
                   </div>
                 )}

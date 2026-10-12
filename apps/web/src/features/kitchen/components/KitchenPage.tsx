@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
-import { Select } from "@/components/ui/Select";
+import { SearchableSelect } from "@/components/ui/SearchableSelect";
 import { Alert } from "@/components/ui/Alert";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
 import { ErrorState } from "@/components/ui/ErrorState";
@@ -128,13 +128,14 @@ function StartProductionModal({
             Recipe
           </label>
           {recipeOptions.length > 0 ? (
-            <Select
+            <SearchableSelect
               value={form.recipe_id}
               onValueChange={(value) =>
                 setForm({ ...form, recipe_id: value })
               }
               options={recipeOptions}
               placeholder="Select a recipe"
+              searchPlaceholder="Search recipe name or code…"
             />
           ) : (
             <Input

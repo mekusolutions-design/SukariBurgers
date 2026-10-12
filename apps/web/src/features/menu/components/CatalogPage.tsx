@@ -3,6 +3,10 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, BookOpen } from "lucide-react";
+import { SearchableSelect } from "@/components/ui/SearchableSelect";
+import { InventorySkuPicker } from "@/components/inventory/InventorySkuPicker";
+import { inventoryApi } from "@/features/inventory/api";
+import { useDebounce } from "@/hooks/use-debounce";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -113,6 +117,42 @@ export function CatalogPage({ shopId }: { shopId: string }) {
   const [taxRate, setTaxRate] = useState("16");
   const [lines, setLines] = useState<LineForm[]>([emptyFixed()]);
   const [itemError, setItemError] = useState<string | null>(null);
+
+  const [invSearch, setInvSearch] = useState("");
+  const debouncedInvSearch = useDebounce(invSearch, 300);
+  const needsInvPicker = lines.some((l) => l.kind === "CHOICE");
+  const invQ = useQuery({
+    queryKey: ["inventory", "catalog-choice-picker", shopId, debouncedInvSearch],
+    queryFn: () =>
+      inventoryApi.list({
+        shopId,
+        page: 1,
+        pageSize: 50,
+        search: debouncedInvSearch.trim() || undefined,
+      }),
+    enabled: needsInvPicker,
+  });
+  const inventorySkuOptions = useMemo(
+    () =>
+      (invQ.data?.items ?? []).map((item) => ({
+        itemId: item.itemId,
+        name: item.name,
+        unit: item.unit,
+        availableStock: item.availableStock,
+        category: item.category ?? null,
+      })),
+    [invQ.data?.items],
+  );
+  const fgSelectOptions = useMemo(() => {
+    const rows = fgQ.data ?? [];
+    return [
+      { value: "", label: "Select finished good…" },
+      ...rows.map((fg) => ({
+        value: fg.itemId,
+        label: formatFgOptionLabel(fg),
+      })),
+    ];
+  }, [fgQ.data]);
 
   const [catName, setCatName] = useState("");
   const [catIdEdit, setCatIdEdit] = useState<string | null>(null);
@@ -431,98 +471,41 @@ export function CatalogPage({ shopId }: { shopId: string }) {
                     </div>
                     {line.kind === "FIXED" ? (
                       <div className="md:col-span-5">
-                        <select
-                          className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm"
+                        <SearchableSelect
                           value={line.finished_good_id}
-                          onChange={(e) => {
-                            const fg = fgs.find(
-                              (x) => x.itemId === e.target.value,
-                            );
+                          onValueChange={(v) => {
+                            const fg = fgs.find((x) => x.itemId === v);
                             setLine(idx, {
-                              finished_good_id: e.target.value,
+                              finished_good_id: v,
                               finished_good_name: fg?.name ?? "",
                               unit: fg?.unit ?? line.unit,
                             });
                           }}
-                        >
-                          <option value="">Select finished good…</option>
-                          {fgs.map((fg) => (
-                            <option key={fg.itemId} value={fg.itemId}>
-                              {formatFgOptionLabel(fg)}
-                            </option>
-                          ))}
-                        </select>
+                          options={fgSelectOptions}
+                          placeholder="Select finished good…"
+                          searchPlaceholder="Search name or SKU…"
+                        />
                       </div>
                     ) : (
                       <div className="md:col-span-5 space-y-2">
-                        <select
-                          className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm"
-                          value=""
-                          onChange={(e) => {
-                            const id = e.target.value;
-                            if (!id) return;
-                            if (line.option_item_ids.includes(id)) return;
-                            const fg = fgs.find((x) => x.itemId === id);
-                            setLine(idx, {
-                              option_item_ids: [
-                                ...line.option_item_ids,
-                                id,
-                              ],
-                              unit: fg?.unit ?? line.unit,
-                            });
-                          }}
-                        >
-                          <option value="">
-                            Add inventory item (same list as Fixed FG)…
-                          </option>
-                          {fgs.map((fg) => (
-                            <option
-                              key={fg.itemId}
-                              value={fg.itemId}
-                              disabled={line.option_item_ids.includes(fg.itemId)}
-                            >
-                              {formatFgOptionLabel(fg)}
-                            </option>
-                          ))}
-                        </select>
-                        {line.option_item_ids.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            {line.option_item_ids.map((id) => {
-                              const fg = fgs.find((x) => x.itemId === id);
-                              const label = fg
-                                ? formatFgOptionLabel(fg)
-                                : id;
-                              return (
-                                <button
-                                  key={id}
-                                  type="button"
-                                  className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-xs"
-                                  onClick={() =>
-                                    setLine(idx, {
-                                      option_item_ids:
-                                        line.option_item_ids.filter(
-                                          (x) => x !== id,
-                                        ),
-                                    })
-                                  }
-                                  title="Remove"
-                                >
-                                  <span className="truncate">{label}</span>
-                                  <span className="text-ink-muted">×</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <p className="text-xs text-ink-muted">
-                            No SKUs selected — add items with the same format as
-                            Fixed FG (name, id, stock · unit).
-                          </p>
-                        )}
                         <p className="text-xs text-ink-muted">
-                          Inventory select — same finished-good list and label
-                          format as Fixed FG; cashier picks among these at sale.
+                          Search and pick stock SKUs from Inventory (not the finished-goods-only list).
                         </p>
+                        <InventorySkuPicker
+                          items={inventorySkuOptions}
+                          selectedIds={line.option_item_ids}
+                          mode="multi"
+                          isLoading={invQ.isLoading}
+                          serverSearch
+                          searchValue={invSearch}
+                          onSearchChange={setInvSearch}
+                          totalAvailable={invQ.data?.total}
+                          emptyTitle="No inventory SKUs"
+                          emptyDescription="Type to search stock, or receive goods first."
+                          onChange={(ids) =>
+                            setLine(idx, { option_item_ids: ids })
+                          }
+                        />
                       </div>
                     )}
                     <div className="md:col-span-2">
