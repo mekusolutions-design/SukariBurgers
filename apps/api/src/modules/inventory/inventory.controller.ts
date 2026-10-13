@@ -118,6 +118,24 @@ export class InventoryController {
     return { success: true, items: [...INVENTORY_CATEGORIES] };
   }
 
+  /** Shop-scoped suggestions for receiving and recipe pickers. */
+  @Get('suggest')
+  @Roles('MANAGER', 'KITCHEN', 'POS', 'ADMIN')
+  @ApiOperation({ summary: 'Suggest existing inventory items' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  async suggest(
+    @CurrentShop() scopedShop: string,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : undefined;
+    return this.inventoryService.suggest({
+      shopId: scopedShop,
+      q,
+      limit: parsedLimit !== undefined && Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+    });
+  }
   @Get(':itemId')
   @Roles('MANAGER', 'KITCHEN', 'POS', 'ADMIN')
   @ApiOperation({ summary: 'Get stock for one item' })

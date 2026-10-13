@@ -30,3 +30,11 @@ describe('API_ENDPOINTS source contract', () => {
     assert.match(endpointsSrc, /KITCHEN_CLOSING_STOCK:\s*'\/kitchen\/closing-stock'/);
   });
 });
+
+
+describe('mobile parity endpoints', () => {
+  it('defines the inventory suggestion endpoint used by receiving', () => {
+    assert.match(endpointsSrc, /INVENTORY_SUGGEST:\s*'\/inventory\/suggest'/);
+    assert.match(endpointsSrc, /MENU_CATEGORIES:\s*'\/menu\/categories'/);
+  });
+});

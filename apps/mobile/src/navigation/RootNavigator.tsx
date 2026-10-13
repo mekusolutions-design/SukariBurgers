@@ -9,13 +9,17 @@ import type { RootStackParamList } from './types';
 
 import LoginScreen from '../screens/auth/LoginScreen';
 import RegisterScreen from '../screens/auth/RegisterScreen';
+import PaymentScreen from '../screens/payment/PaymentScreen';
+import PaymentSuccessScreen from '../screens/payment/PaymentSuccessScreen';
 import StockOverviewScreen from '../screens/inventory/StockOverviewScreen';
+import KitchenDisplayScreen from '../screens/kitchen/KitchenDisplayScreen';
 import ReceiveGoodsScreen from '../screens/inventory/ReceiveGoodsScreen';
 import RefillRequestScreen from '../screens/refill/RefillRequestScreen';
 import RefillApprovalScreen from '../screens/refill/RefillApprovalScreen';
 import ProductionScreen from '../screens/production/ProductionScreen';
 import ProductionHistoryScreen from '../screens/production/ProductionHistoryScreen';
 import RecipeListScreen from '../screens/recipe/RecipeListScreen';
+import RecipeDetailScreen from '../screens/recipe/RecipeDetailScreen';
 import CreateRecipeScreen from '../screens/recipe/CreateRecipeScreen';
 import FinishedGoodsScreen from '../screens/finished-goods/FinishedGoodsScreen';
 import MenuListScreen from '../screens/menu/MenuListScreen';
@@ -78,11 +82,26 @@ export default function RootNavigator() {
         component={RegisterScreen}
         options={{ title: 'Create Account' }}
       />
+      <Stack.Screen
+        name="Payment"
+        component={PaymentScreen}
+        options={{ title: 'Complete Payment' }}
+      />
+      <Stack.Screen
+        name="PaymentSuccess"
+        component={PaymentSuccessScreen}
+        options={{ title: 'Payment Successful' }}
+      />
 
       <Stack.Screen
         name="StockOverview"
         component={StockOverviewScreen}
         options={{ title: 'Stock Overview' }}
+      />
+      <Stack.Screen
+        name="KitchenDisplay"
+        component={KitchenDisplayScreen}
+        options={{ title: 'Kitchen Display' }}
       />
       <Stack.Screen
         name="Receive"
@@ -116,6 +135,11 @@ export default function RootNavigator() {
         name="RecipeList"
         component={RecipeListScreen}
         options={{ title: 'Recipes' }}
+      />
+      <Stack.Screen
+        name="RecipeDetail"
+        component={RecipeDetailScreen}
+        options={{ title: 'Recipe Details' }}
       />
       <Stack.Screen
         name="CreateRecipe"

@@ -17,6 +17,7 @@ export type RootStackParamList = {
   };
 
   StockOverview: undefined;
+  KitchenDisplay: undefined;
   Receive: { scannedItemId?: string } | undefined;
 
   RefillRequest: undefined;
@@ -26,6 +27,7 @@ export type RootStackParamList = {
   ProductionHistory: undefined;
 
   RecipeList: undefined;
+  RecipeDetail: { recipe: any };
   CreateRecipe: undefined;
 
   FinishedGoods: undefined;

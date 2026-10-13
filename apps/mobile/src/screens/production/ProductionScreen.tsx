@@ -16,6 +16,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 
 import { useAuthStore } from '../../features/auth/authStore';
+import { useRole } from '../../hooks/useRole';
 import { useProductionStore } from '../../features/production/productionStore';
 import { useOfflineStore } from '../../features/offline/offlineStore';
 import { getSocket } from '../../lib/socket';
@@ -41,6 +42,8 @@ export default function ProductionScreen() {
   const navigation = useNavigation<RootNavigationProp>();
   const token = useAuthStore((s) => s.token);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const { isKitchen, isManager, isAdmin } = useRole();
+  const canStartProduction = isKitchen || isManager || isAdmin;
 
   const { startProduction, isSubmitting, getPendingCount } =
     useProductionStore();
@@ -137,6 +140,17 @@ export default function ProductionScreen() {
     }
   };
 
+  if (!canStartProduction) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.scrollContent}>
+          <Text style={typography.title}>Production</Text>
+          <Text style={styles.errorText}>You do not have permission to start production batches.</Text>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -146,7 +160,7 @@ export default function ProductionScreen() {
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={typography.title}>Start Production</Text>
+        <Text style={typography.title}>Start batch</Text>
         <Text style={styles.connection}>
           {connected ? '● Live' : '○ Connecting...'}
           {pendingCount > 0 ? `  ·  ${pendingCount} pending` : ''}
@@ -266,7 +280,7 @@ export default function ProductionScreen() {
             {isSubmitting ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.buttonText}>Start Production</Text>
+              <Text style={styles.buttonText}>Start batch</Text>
             )}
           </TouchableOpacity>
         </View>

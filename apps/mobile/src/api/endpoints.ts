@@ -5,6 +5,7 @@ export const API_ENDPOINTS = {
 
   RECEIVE_GOODS: '/received',
   GET_STOCK: '/inventory',
+  INVENTORY_SUGGEST: '/inventory/suggest',
 
   KITCHEN_CLOSING_STOCK: '/kitchen/closing-stock',
   KITCHEN_ACTIVE_ORDERS: '/kitchen/active-orders',
@@ -25,6 +26,7 @@ export const API_ENDPOINTS = {
 
   MENU_LIST: '/menu',
   MENU_COMBOS: '/menu/combos',
+  MENU_CATEGORIES: '/menu/categories',
 
   RECIPE_LIST: '/recipe',
   RECIPE_BY_ITEM: (itemId: string) =>

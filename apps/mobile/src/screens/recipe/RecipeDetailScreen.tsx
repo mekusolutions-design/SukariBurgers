@@ -11,6 +11,7 @@ import {
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, spacing, typography } from '../../lib/theme';
+import { useRole } from '../../hooks/useRole';
 
 type RootStackParamList = {
   RecipeDetail: { recipe: any };
@@ -19,6 +20,7 @@ type RootStackParamList = {
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'RecipeDetail'>;
 
 export default function RecipeDetailScreen() {
+  const { canEditRecipe } = useRole();
   const navigation = useNavigation<NavigationProp>();
   const route = useRoute();
   const { recipe } = route.params as { recipe: any };
@@ -86,16 +88,19 @@ export default function RecipeDetailScreen() {
 
       {/* Action Buttons */}
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.editButton} onPress={handleEdit}>
-          <Text style={styles.editButtonText}>Edit Recipe</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity 
-          style={styles.deleteButton}
-          onPress={() => Alert.alert('Delete', 'This feature is coming soon')}
-        >
-          <Text style={styles.deleteButtonText}>Delete Recipe</Text>
-        </TouchableOpacity>
+                {canEditRecipe ? (
+          <>
+            <TouchableOpacity style={styles.editButton} onPress={handleEdit}>
+              <Text style={styles.editButtonText}>Edit Recipe</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => Alert.alert('Delete', 'This feature is coming soon')}
+            >
+              <Text style={styles.deleteButtonText}>Delete Recipe</Text>
+            </TouchableOpacity>
+          </>
+        ) : null}
       </View>
     </ScrollView>
   );

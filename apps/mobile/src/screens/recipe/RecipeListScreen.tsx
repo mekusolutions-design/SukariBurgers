@@ -32,7 +32,7 @@ export default function RecipeListScreen() {
   const navigation =
     useNavigation<NavigationProp<RootStackParamList>>();
 
-  const { isManager } = useRole();
+  const { canEditRecipe } = useRole();
 
   const {
     pendingRecipes,
@@ -138,7 +138,7 @@ export default function RecipeListScreen() {
         }
       />
 
-      {isManager && (
+      {canEditRecipe && (
         <TouchableOpacity
           style={styles.fab}
           onPress={() =>

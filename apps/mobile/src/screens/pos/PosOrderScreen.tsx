@@ -1,9 +1,11 @@
 // apps/mobile/src/screens/pos/PosOrderScreen.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -26,15 +28,86 @@ interface MenuItem {
   ingredients?: Record<string, number>;
 }
 
+type ComboGroup = {
+  groupIndex: number;
+  menuCategoryId: string;
+  menuCategoryName: string;
+  quantity: number;
+};
+
+type Combo = {
+  id: string;
+  name: string;
+  price: number;
+  active: boolean;
+  groups: ComboGroup[];
+};
+
+type MenuCategory = {
+  id: string;
+  name: string;
+  menuItemIds: string[];
+};
+
+type SearchHit = {
+  kind: 'item' | 'combo';
+  id: string;
+  name: string;
+  price: number;
+  category?: string;
+  available: boolean;
+  menu?: MenuItem;
+  combo?: Combo;
+};
+
+type ComboSelection = { group_index: number; menu_item_ids: string[] };
+
 interface OrderItem extends MenuItem {
   qty: number;
+  line_type?: 'menu_item' | 'combo';
+  combo_id?: string;
+  combo_selections?: ComboSelection[];
 }
+
+function fuzzyMatch(name: string, query: string): boolean {
+  const n = name.toLowerCase();
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+  if (n.includes(q)) return true;
+  const words = n.split(/\s+/);
+  if (q.split(/\s+/).every((part) => words.some((word) => word.startsWith(part)))) return true;
+  if (q.length < 4) return false;
+  // Bounded one-edit matching for short counter searches.
+  for (const word of words) {
+    if (Math.abs(word.length - q.length) > 1) continue;
+    let i = 0; let j = 0; let edits = 0;
+    while (i < q.length && j < word.length) {
+      if (q[i] === word[j]) { i++; j++; continue; }
+      edits++;
+      if (edits > 1) break;
+      if (q.length > word.length) i++;
+      else if (word.length > q.length) j++;
+      else { i++; j++; }
+    }
+    if (i < q.length || j < word.length) edits++;
+    if (edits <= 1) return true;
+  }
+  return false;
+}
+
 
 export default function PosOrderScreen(): React.JSX.Element {
   const { updateStockLocally } = useInventoryStore();
   const { submitOrder, isSubmitting } = usePosStore();
 
   const [menu, setMenu] = useState<MenuItem[]>([]);
+  const [combos, setCombos] = useState<Combo[]>([]);
+  const [categories, setCategories] = useState<MenuCategory[]>([]);
+  const [searchText, setSearchText] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedCombo, setSelectedCombo] = useState<Combo | null>(null);
+  const [comboModalOpen, setComboModalOpen] = useState(false);
+  const [comboPicks, setComboPicks] = useState<Record<number, Record<string, number>>>({});
   const [order, setOrder] = useState<OrderItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +166,47 @@ export default function PosOrderScreen(): React.JSX.Element {
           })
           .filter(Boolean) as MenuItem[];
         setMenu(normalized);
+
+        const [comboResult, categoryResult] = await Promise.allSettled([
+          apiClient.get(API_ENDPOINTS.MENU_COMBOS, { params: { shopId: '1' } }),
+          apiClient.get(API_ENDPOINTS.MENU_CATEGORIES, { params: { shopId: '1' } }),
+        ]);
+        if (comboResult.status === 'fulfilled') {
+          const payload = comboResult.value.data as Record<string, unknown> | unknown[];
+          const root = (payload ?? {}) as Record<string, unknown>;
+          const rows = Array.isArray(payload) ? payload : Array.isArray(root.items) ? root.items : Array.isArray(root.data) ? root.data : [];
+          setCombos((rows as Record<string, unknown>[]).map((row) => {
+            const groupsRaw = row.selectionGroups ?? row.selection_groups;
+            const groups = Array.isArray(groupsRaw) ? groupsRaw as Record<string, unknown>[] : [];
+            return {
+              id: String(row.comboId ?? row.combo_id ?? row.id ?? ''),
+              name: String(row.name ?? ''),
+              price: Number(row.sellingPrice ?? row.selling_price ?? row.price ?? 0),
+              active: row.active !== false,
+              groups: groups.map((group, index) => ({
+                groupIndex: Number(group.groupIndex ?? group.group_index ?? index),
+                menuCategoryId: String(group.menuCategoryId ?? group.menu_category_id ?? ''),
+                menuCategoryName: String(group.menuCategoryName ?? group.menu_category_name ?? group.name ?? 'Selection'),
+                quantity: Math.max(1, Number(group.quantity ?? 1)),
+              })),
+            };
+          }).filter((combo) => combo.id && combo.name && combo.active));
+        }
+        if (categoryResult.status === 'fulfilled') {
+          const payload = categoryResult.value.data as Record<string, unknown> | unknown[];
+          const root = (payload ?? {}) as Record<string, unknown>;
+          const rows = Array.isArray(payload) ? payload : Array.isArray(root.items) ? root.items : Array.isArray(root.data) ? root.data : [];
+          setCategories((rows as Record<string, unknown>[]).map((row) => {
+            const menuItems = Array.isArray(row.menuItems) ? row.menuItems as Record<string, unknown>[] : Array.isArray(row.menu_items) ? row.menu_items as Record<string, unknown>[] : [];
+            const idsRaw = row.menuItemIds ?? row.menu_item_ids;
+            const ids = Array.isArray(idsRaw) ? idsRaw.map(String) : menuItems.map((item) => String(item.menuItemId ?? item.menu_item_id ?? item.id ?? '')).filter(Boolean);
+            return {
+              id: String(row.categoryId ?? row.category_id ?? row.id ?? ''),
+              name: String(row.name ?? row.categoryName ?? ''),
+              menuItemIds: ids,
+            };
+          }).filter((category) => category.id));
+        }
       } catch (err: any) {
         const msg =
           err?.response?.data?.message || err.message || 'Failed to load menu';
@@ -104,6 +218,29 @@ export default function PosOrderScreen(): React.JSX.Element {
     fetchMenu();
   }, []);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchText.trim()), 200);
+    return () => clearTimeout(timer);
+  }, [searchText]);
+
+  const searchHits = useMemo<SearchHit[]>(() => {
+    const q = debouncedSearch.toLowerCase();
+    const itemHits: SearchHit[] = menu
+      .filter((item) => !q || fuzzyMatch(item.name, q) || fuzzyMatch(item.id, q) || fuzzyMatch(item.category ?? '', q))
+      .map((item) => ({ kind: 'item', id: item.id, name: item.name, price: item.price, category: item.category, available: item.isAvailable !== false, menu: item }));
+    if (!q) return itemHits;
+    const comboHits: SearchHit[] = combos
+      .filter((combo) => combo.active && fuzzyMatch(combo.name, q))
+      .map((combo) => ({ kind: 'combo', id: combo.id, name: combo.name, price: combo.price, category: 'Combo', available: true, combo }));
+    return [...itemHits, ...comboHits]
+      .sort((a, b) => {
+        const aPrefix = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const bPrefix = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        return aPrefix - bPrefix || a.name.localeCompare(b.name);
+      })
+      .slice(0, 10);
+  }, [menu, combos, debouncedSearch]);
+
   const addToOrder = (menuItem: MenuItem) => {
     setOrder((prev) => {
       const existing = prev.find((i) => i.id === menuItem.id);
@@ -114,6 +251,65 @@ export default function PosOrderScreen(): React.JSX.Element {
       }
       return [...prev, { ...menuItem, qty: 1 }];
     });
+  };
+
+  const selectSearchHit = (hit: SearchHit) => {
+    if (!hit.available) return;
+    if (hit.kind === 'item' && hit.menu) {
+      addToOrder(hit.menu);
+      setSearchText('');
+      return;
+    }
+    if (hit.kind === 'combo' && hit.combo) {
+      setSelectedCombo(hit.combo);
+      setComboPicks({});
+      setComboModalOpen(true);
+      setSearchText('');
+    }
+  };
+
+  const setComboItemCount = (groupIndex: number, itemId: string, delta: number, required: number) => {
+    setComboPicks((previous) => {
+      const group = { ...(previous[groupIndex] ?? {}) };
+      const current = group[itemId] ?? 0;
+      const otherCount = Object.entries(group).filter(([id]) => id !== itemId).reduce<number>((sum, [, count]) => sum + Number(count), 0);
+      const next = Math.max(0, Math.min(current + delta, required - otherCount));
+      if (next === 0) delete group[itemId]; else group[itemId] = next;
+      return { ...previous, [groupIndex]: group };
+    });
+  };
+
+  const addSelectedCombo = () => {
+    if (!selectedCombo) return;
+    const missing = selectedCombo.groups.find((group) => {
+      const picked = Object.values(comboPicks[group.groupIndex] ?? {}).reduce<number>((sum, count) => sum + Number(count), 0);
+      return picked !== group.quantity;
+    });
+    if (missing) {
+      Alert.alert('Complete combo choices', `Choose exactly ${missing.quantity} item(s) for ${missing.menuCategoryName}.`);
+      return;
+    }
+    const selections = selectedCombo.groups.map((group) => {
+      const ids: string[] = [];
+      for (const [id, count] of Object.entries(comboPicks[group.groupIndex] ?? {})) {
+        for (let i = 0; i < Number(count); i++) ids.push(id);
+      }
+      return { group_index: group.groupIndex, menu_item_ids: ids };
+    });
+    setOrder((previous) => [...previous, {
+      id: `combo:${selectedCombo.id}:${Date.now()}`,
+      name: selectedCombo.name,
+      price: selectedCombo.price,
+      category: 'Combo',
+      isAvailable: true,
+      qty: 1,
+      line_type: 'combo',
+      combo_id: selectedCombo.id,
+      combo_selections: selections,
+    }]);
+    setComboModalOpen(false);
+    setSelectedCombo(null);
+    setComboPicks({});
   };
 
   const increaseQty = (id: string) => {
@@ -159,9 +355,16 @@ export default function PosOrderScreen(): React.JSX.Element {
       customer_phone: customerPhone || undefined,
       delivery_address: deliveryAddress || undefined,
       items: order.map((item) => ({
-        line_type: 'menu_item' as const,
-        menu_item_id: item.id,
-        menu_id: item.id,
+        line_type: item.line_type ?? 'menu_item',
+        ...(item.line_type === 'combo'
+          ? {
+              combo_id: item.combo_id,
+              combo_selections: (item.combo_selections ?? []).map((group) => ({
+                ...group,
+                menu_item_ids: Array.from({ length: item.qty }, () => group.menu_item_ids).flat(),
+              })),
+            }
+          : { menu_item_id: item.id, menu_id: item.id }),
         menu_name: item.name,
         quantity: item.qty,
         unit_price: item.price,
@@ -272,18 +475,37 @@ export default function PosOrderScreen(): React.JSX.Element {
         )}
       </View>
 
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search menu items and combos…"
+        value={searchText}
+        onChangeText={setSearchText}
+        autoCapitalize="none"
+        returnKeyType="search"
+        accessibilityLabel="Search menu items and combos"
+      />
       <FlatList
-        data={menu}
-        keyExtractor={(item) => item.id}
+        data={searchHits}
+        keyExtractor={(hit) => `${hit.kind}:${hit.id}`}
         style={styles.menuList}
+        keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => (
-          <TouchableOpacity style={styles.menuItem} onPress={() => addToOrder(item)}>
-            <Text style={styles.menuName}>{item.name}</Text>
-            <Text style={styles.menuPrice}>KES {item.price.toFixed(0)}</Text>
+          <TouchableOpacity
+            style={[styles.menuItem, !item.available && styles.menuItemUnavailable]}
+            onPress={() => selectSearchHit(item)}
+            disabled={!item.available}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !item.available }}
+          >
+            <View style={{ flex: 1, marginRight: spacing.sm }}>
+              <Text style={[styles.menuName, !item.available && styles.unavailableText]}>{item.name}</Text>
+              <Text style={styles.resultMeta}>{item.kind === 'combo' ? 'COMBO' : 'ITEM'}{item.category ? ` · ${item.category}` : ''}{!item.available ? ' · Unavailable' : ''}</Text>
+            </View>
+            <Text style={[styles.menuPrice, !item.available && styles.unavailableText]}>KES {item.price.toFixed(2)}</Text>
           </TouchableOpacity>
         )}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>No menu items available</Text>
+          <Text style={styles.emptyText}>{debouncedSearch ? 'No menu item or combo found' : 'No menu items available'}</Text>
         }
       />
 
@@ -338,6 +560,46 @@ export default function PosOrderScreen(): React.JSX.Element {
           )}
         </TouchableOpacity>
       </View>
+
+      <Modal visible={comboModalOpen} animationType="slide" transparent onRequestClose={() => setComboModalOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.comboModal}>
+            <Text style={styles.comboModalTitle}>{selectedCombo?.name ?? 'Choose combo items'}</Text>
+            <Text style={styles.resultMeta}>Select the required items for each group.</Text>
+            <ScrollView style={styles.comboScroll} keyboardShouldPersistTaps="handled">
+              {selectedCombo?.groups.map((group) => {
+                const category = categories.find((row) => row.id === group.menuCategoryId);
+                const options = (category?.menuItemIds ?? []).map((id) => menu.find((item) => item.id === id)).filter((item): item is MenuItem => !!item);
+                const picked = Object.values(comboPicks[group.groupIndex] ?? {}).reduce<number>((sum, count) => sum + Number(count), 0);
+                return (
+                  <View key={group.groupIndex} style={styles.comboGroup}>
+                    <Text style={styles.comboGroupTitle}>{group.menuCategoryName || category?.name || 'Selection'} · choose {group.quantity} ({picked}/{group.quantity})</Text>
+                    {options.map((option) => {
+                      const count = comboPicks[group.groupIndex]?.[option.id] ?? 0;
+                      return (
+                        <View key={option.id} style={styles.comboOption}>
+                          <Text style={styles.comboOptionName}>{option.name}</Text>
+                          <View style={styles.quantityControls}>
+                            <TouchableOpacity style={styles.qtyButton} disabled={count <= 0} onPress={() => setComboItemCount(group.groupIndex, option.id, -1, group.quantity)}><Text>-</Text></TouchableOpacity>
+                            <Text>{count}</Text>
+                            <TouchableOpacity style={styles.qtyButton} disabled={picked >= group.quantity} onPress={() => setComboItemCount(group.groupIndex, option.id, 1, group.quantity)}><Text>+</Text></TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
+                    {options.length === 0 ? <Text style={styles.resultMeta}>No items found for this combo group.</Text> : null}
+                  </View>
+                );
+              })}
+            </ScrollView>
+            <Text style={styles.comboPrice}>KES {(selectedCombo?.price ?? 0).toFixed(2)}</Text>
+            <View style={styles.comboActions}>
+              <TouchableOpacity style={styles.cancelComboButton} onPress={() => { setComboModalOpen(false); setSelectedCombo(null); setComboPicks({}); }}><Text style={styles.cancelComboText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.addComboButton} onPress={addSelectedCombo}><Text style={styles.addComboText}>Add combo to order</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -372,7 +634,25 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     color: colors.textPrimary,
   },
+  searchInput: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: spacing.md, marginBottom: spacing.sm, color: colors.textPrimary },
   menuList: { flex: 1 },
+  resultMeta: { color: colors.textSecondary, fontSize: 11, marginTop: 3 },
+  menuItemUnavailable: { opacity: 0.48 },
+  unavailableText: { color: colors.textSecondary },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: spacing.md },
+  comboModal: { maxHeight: '90%', backgroundColor: colors.background, borderRadius: 16, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
+  comboModalTitle: { fontSize: 20, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.xs },
+  comboScroll: { marginTop: spacing.md, flexGrow: 0 },
+  comboGroup: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: spacing.sm, marginBottom: spacing.sm },
+  comboGroupTitle: { fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm },
+  comboOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.xs },
+  comboOptionName: { flex: 1, color: colors.textPrimary },
+  comboPrice: { fontSize: 18, fontWeight: '700', color: colors.primary, textAlign: 'right', marginTop: spacing.sm },
+  comboActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  cancelComboButton: { flex: 1, borderRadius: 10, padding: spacing.md, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
+  cancelComboText: { color: colors.textPrimary, fontWeight: '600' },
+  addComboButton: { flex: 2, borderRadius: 10, padding: spacing.md, backgroundColor: colors.primary, alignItems: 'center' },
+  addComboText: { color: '#fff', fontWeight: '700' },
   menuItem: {
     backgroundColor: colors.surface,
     padding: spacing.md,

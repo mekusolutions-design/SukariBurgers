@@ -7,6 +7,7 @@ interface KitchenState {
   selectedOrder: KitchenOrder | null;
 
   addOrder: (order: KitchenOrder) => void;
+  setOrders: (orders: KitchenOrder[]) => void;
   updateOrderStatus: (order_id: string, status: OrderStatus) => void;
   setSelectedOrder: (order: KitchenOrder | null) => void;
   clearCompleted: () => void;
@@ -21,6 +22,8 @@ export const useKitchenStore = create<KitchenState>((set, get) => ({
     set((state) => ({
       orders: [order, ...state.orders.filter((o) => o.order_id !== order.order_id)],
     })),
+
+  setOrders: (orders) => set({ orders }),
 
   updateOrderStatus: (order_id, status) =>
     set((state) => ({

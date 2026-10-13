@@ -11,6 +11,7 @@ const REQUIRED_FILES = [
   'screens/kitchen/PrePrepScreen.tsx',
   'screens/kitchen/ClosingStockScreen.tsx',
   'screens/production/ProductionScreen.tsx',
+  'screens/kitchen/KitchenDisplayScreen.tsx',
   'screens/approvals/ApprovalsScreen.tsx',
   'screens/dashboard/ManagerDashboardScreen.tsx',
   'screens/inventory/StockOverviewScreen.tsx',

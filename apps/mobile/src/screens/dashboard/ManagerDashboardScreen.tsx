@@ -151,6 +151,30 @@ export default function ManagerDashboardScreen() {
 
       <TouchableOpacity
         style={styles.card}
+        onPress={() => navigation.navigate('Production')}
+      >
+        <Text style={styles.cardTitle}>Start batch</Text>
+        <Text style={styles.cardDesc}>Start a production batch from a recipe</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => navigation.navigate('ProductionHistory')}
+      >
+        <Text style={styles.cardTitle}>Production history</Text>
+        <Text style={styles.cardDesc}>Review recent and completed batches</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => navigation.navigate('KitchenDisplay')}
+      >
+        <Text style={styles.cardTitle}>Kitchen display</Text>
+        <Text style={styles.cardDesc}>View and update active kitchen orders</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.card}
         onPress={() => navigation.navigate('PrePrep')}
       >
         <Text style={styles.cardTitle}>Pre-prep</Text>

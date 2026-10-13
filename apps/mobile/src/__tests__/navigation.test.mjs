@@ -5,18 +5,22 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const navTypes = readFileSync(join(__dirname, '../types/navigation.ts'), 'utf8');
+const navTypes = readFileSync(join(__dirname, '../navigation/types.ts'), 'utf8');
 const rootNav = readFileSync(join(__dirname, '../navigation/RootNavigator.tsx'), 'utf8');
 
 const REQUIRED_SCREENS = [
   'Login',
   'Register',
+  'Payment',
+  'PaymentSuccess',
   'StockOverview',
+  'KitchenDisplay',
   'Receive',
   'PosOrder',
   'Production',
   'ProductionHistory',
   'RecipeList',
+  'RecipeDetail',
   'RecordWaste',
   'ClosingStock',
   'PrePrep',
@@ -47,6 +51,11 @@ describe('navigation coverage', () => {
     assert.match(rootNav, /name="PrePrep"/);
     assert.match(rootNav, /name="Approvals"/);
     assert.match(rootNav, /name="ManagerDashboard"/);
+  });
+
+  it('RootNavigator registers KitchenDisplay so kitchen staff can open the kitchen workflow', () => {
+    assert.match(rootNav, /name="KitchenDisplay"/);
+    assert.match(rootNav, /KitchenDisplayScreen/);
   });
 
   it('RootNavigator imports parity screens', () => {

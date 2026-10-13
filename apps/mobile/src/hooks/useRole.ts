@@ -18,6 +18,9 @@ export const useRole = () => {
   /** Only ADMIN mutates menu */
   const canEditMenu = isAdmin;
 
+  /** Only ADMIN creates/edits recipes (web canEditRecipe parity) */
+  const canEditRecipe = isAdmin;
+
   /** Only ADMIN changes user roles */
   const canChangeUserRole = isAdmin;
 
@@ -28,6 +31,7 @@ export const useRole = () => {
     isPos,
     canUsePos,
     canEditMenu,
+    canEditRecipe,
     canChangeUserRole,
     role,
     hasRole: (requiredRole: string) => role === requiredRole,

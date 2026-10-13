@@ -1,4 +1,4 @@
-// apps/mobile/src/screens/inventory/ReceiveGoodsScreen.tsx
+﻿// apps/mobile/src/screens/inventory/ReceiveGoodsScreen.tsx
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useEffect, useState } from 'react';
@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 
 import { useReceiveStore } from '../../features/receive/receiveStore';
+import apiClient from '../../api/apiClient';
+import { API_ENDPOINTS } from '../../api/endpoints';
 import { useOfflineStore } from '../../features/offline/offlineStore';
 import {
   DEFAULT_INGREDIENT_CATEGORY,
@@ -36,6 +38,50 @@ type RootStackParamList = {
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'Receive'>;
 
 const dateOnlyToday = () => new Date().toISOString().split('T')[0];
+
+type InventorySuggestion = {
+  itemId: string;
+  name: string;
+  category: string;
+  unit: string;
+  availableStock: number;
+  lastReceivedAt?: string | null;
+  avgUnitCost?: number;
+};
+
+function normalizeSuggestion(raw: Record<string, unknown>): InventorySuggestion | null {
+  const itemId = String(raw.itemId ?? raw.item_id ?? '').trim();
+  if (!itemId) return null;
+  return {
+    itemId,
+    name: String(raw.name ?? raw.itemName ?? raw.item_name ?? itemId),
+    category: String(raw.category ?? ''),
+    unit: String(raw.unit ?? raw.units ?? 'pcs'),
+    availableStock: Number(raw.availableStock ?? raw.available_stock ?? 0),
+    lastReceivedAt: raw.lastReceivedAt == null && raw.last_received_at == null
+      ? null : String(raw.lastReceivedAt ?? raw.last_received_at),
+    avgUnitCost: Number(raw.avgUnitCost ?? raw.avg_unit_cost ?? 0),
+  };
+}
+
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  const left = a.toLowerCase().trim();
+  const right = b.toLowerCase().trim();
+  if (!left || !right || Math.abs(left.length - right.length) > 1) return false;
+  if (left === right) return true;
+  let i = 0; let j = 0; let edits = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) { i++; j++; continue; }
+    edits++;
+    if (edits > 1) return false;
+    if (left.length > right.length) i++;
+    else if (right.length > left.length) j++;
+    else { i++; j++; }
+  }
+  if (i < left.length || j < right.length) edits++;
+  return edits <= 1;
+}
+
 
 const emptyForm = () => ({
   item_id: '',
@@ -72,6 +118,10 @@ export default function ReceiveGoodsScreen() {
   const [categoryGroup, setCategoryGroup] = useState(
     INGREDIENT_CATEGORY_GROUPS[0]?.group ?? '',
   );
+  const [suggestions, setSuggestions] = useState<InventorySuggestion[]>([]);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [selectedExistingItem, setSelectedExistingItem] = useState<InventorySuggestion | null>(null);
 
   useEffect(() => {
     const params = route.params as { scannedItemId?: string } | undefined;
@@ -81,6 +131,64 @@ export default function ReceiveGoodsScreen() {
       navigation.setParams({ scannedItemId: undefined } as never);
     }
   }, [route.params, navigation]);
+
+  // Suggest from item name OR SKU (item_id) â€” web/Michael parity
+  useEffect(() => {
+    const nameQ = form.item_name.trim();
+    const skuQ = form.item_id.trim();
+    const query = nameQ.length >= 1 ? nameQ : skuQ;
+    if (
+      selectedExistingItem &&
+      nameQ.toLowerCase() === selectedExistingItem.name.toLowerCase() &&
+      skuQ.toLowerCase() === selectedExistingItem.itemId.toLowerCase()
+    ) {
+      setSuggestions([]);
+      setSuggestionError(null);
+      return;
+    }
+    if (query.length < 1) {
+      setSuggestions([]);
+      setSuggestionError(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setSuggestionLoading(true);
+      setSuggestionError(null);
+      try {
+        const response = await apiClient.get(API_ENDPOINTS.INVENTORY_SUGGEST, {
+          params: { shopId: '1', q: query, limit: 10 },
+        });
+        const root = (response.data ?? {}) as Record<string, unknown>;
+        const rows = Array.isArray(root.items) ? root.items : Array.isArray(response.data) ? response.data : [];
+        let mapped = (rows as Record<string, unknown>[])
+          .map(normalizeSuggestion)
+          .filter((row): row is InventorySuggestion => row !== null);
+        // If substring search returns no hit, light typo hint on name or SKU
+        if (mapped.length === 0) {
+          const fallback = await apiClient.get(API_ENDPOINTS.INVENTORY_SUGGEST, {
+            params: { shopId: '1', limit: 20 },
+          });
+          const fallbackRoot = (fallback.data ?? {}) as Record<string, unknown>;
+          const fallbackRows = Array.isArray(fallbackRoot.items) ? fallbackRoot.items : [];
+          mapped = (fallbackRows as Record<string, unknown>[])
+            .map(normalizeSuggestion)
+            .filter((row): row is InventorySuggestion => row !== null)
+            .filter((row) => editDistanceAtMostOne(query, row.name) || editDistanceAtMostOne(query, row.itemId))
+            .slice(0, 5);
+        }
+        if (!cancelled) setSuggestions(mapped);
+      } catch (error: unknown) {
+        if (!cancelled) {
+          setSuggestions([]);
+          setSuggestionError(error instanceof Error ? error.message : 'Could not search existing SKUs');
+        }
+      } finally {
+        if (!cancelled) setSuggestionLoading(false);
+      }
+    }, 220);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [form.item_name, form.item_id, selectedExistingItem]);
 
   useEffect(() => {
     const approvedQty =
@@ -142,7 +250,7 @@ export default function ReceiveGoodsScreen() {
 
     const unitCost = Number(form.unit_cost);
     if (!form.unit_cost.trim() || Number.isNaN(unitCost) || unitCost <= 0) {
-      newErrors.unit_cost = 'Unit cost (KES) must be greater than 0 — needed for inventory value';
+      newErrors.unit_cost = 'Unit cost (KES) must be greater than 0 â€” needed for inventory value';
     }
 
     if (!form.batch_number.trim()) {
@@ -161,10 +269,27 @@ export default function ReceiveGoodsScreen() {
     if (errors[field]) setErrors((prev) => ({ ...prev, [field]: '' }));
   };
 
+  const applyInventorySuggestion = (item: InventorySuggestion) => {
+    setSelectedExistingItem(item);
+    setSuggestions([]);
+    setForm((prev) => ({
+      ...prev,
+      item_id: item.itemId,
+      item_name: item.name,
+      category: item.category || prev.category,
+      units: item.unit || prev.units,
+      unit_cost: (item.avgUnitCost ?? 0) > 0 ? String(item.avgUnitCost) : prev.unit_cost,
+    }));
+    const group = INGREDIENT_CATEGORY_GROUPS.find((g) => g.items.some((c) => c.toLowerCase() === item.category.toLowerCase()));
+    if (group) setCategoryGroup(group.group);
+  };
+
   const resetForm = () => {
     setForm(emptyForm());
     setErrors({});
     setCategoryGroup(INGREDIENT_CATEGORY_GROUPS[0]?.group ?? '');
+    setSuggestions([]);
+    setSelectedExistingItem(null);
   };
 
   const handleSubmit = async () => {
@@ -259,11 +384,20 @@ export default function ReceiveGoodsScreen() {
                 ]}
                 placeholder="e.g. ST300"
                 value={form.item_id}
-                onChangeText={(v) => handleChange('item_id', v)}
+                onChangeText={(v) => {
+                  if (selectedExistingItem && v.toLowerCase() !== selectedExistingItem.itemId.toLowerCase()) {
+                    setSelectedExistingItem(null);
+                    setForm((prev) => ({ ...prev, item_id: v }));
+                  } else {
+                    handleChange('item_id', v);
+                  }
+                }}
+                editable={!selectedExistingItem}
                 autoCapitalize="characters"
               />
               <TouchableOpacity
-                style={styles.scanButton}
+                style={[styles.scanButton, selectedExistingItem && styles.chipDisabled]}
+                disabled={!!selectedExistingItem}
                 onPress={() => navigation.navigate('BarcodeScanner')}
               >
                 <Text style={styles.scanButtonText}>Scan</Text>
@@ -272,16 +406,53 @@ export default function ReceiveGoodsScreen() {
             {errors.item_id ? (
               <Text style={styles.errorText}>{errors.item_id}</Text>
             ) : null}
+            {!selectedExistingItem && form.item_id.trim().length >= 1 && suggestions.length > 0 ? (
+              <View style={styles.suggestionPanel}>
+                {suggestions.map((item) => (
+                  <TouchableOpacity key={`sku-${item.itemId}`} style={styles.suggestionRow} onPress={() => applyInventorySuggestion(item)}>
+                    <Text style={styles.suggestionName}>{item.itemId}</Text>
+                    <Text style={styles.suggestionMeta}>{item.name} Â· {item.category || 'Uncategorised'} Â· {item.unit}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+            <Text style={styles.suggestionMeta}>Type SKU or name â€” both fields search previously received inventory.</Text>
           </View>
 
           <View style={styles.formGroup}>
             <Text style={typography.label}>Item Name *</Text>
             <TextInput
               style={[styles.input, errors.item_name && styles.inputError]}
-              placeholder="e.g. Exe Flour"
+              placeholder="Type name or search previously received SKUsâ€¦"
               value={form.item_name}
-              onChangeText={(v) => handleChange('item_name', v)}
+              onChangeText={(v) => {
+                if (selectedExistingItem && v.toLowerCase() !== selectedExistingItem.name.toLowerCase()) {
+                  setSelectedExistingItem(null);
+                  setForm((prev) => ({ ...prev, item_id: '', item_name: v }));
+                } else {
+                  handleChange('item_name', v);
+                }
+              }}
+              autoCapitalize="words"
             />
+            {suggestionLoading ? <Text style={styles.suggestionMeta}>Searching existing inventoryâ€¦</Text> : null}
+            {suggestionError ? <Text style={styles.errorText}>{suggestionError}</Text> : null}
+            {suggestions.length > 0 ? (
+              <View style={styles.suggestionPanel}>
+                {suggestions.map((item) => (
+                  <TouchableOpacity key={item.itemId} style={styles.suggestionRow} onPress={() => applyInventorySuggestion(item)}>
+                    <Text style={styles.suggestionName}>{item.name}</Text>
+                    <Text style={styles.suggestionMeta}>{item.itemId} Â· {item.category || 'Uncategorised'} Â· {item.unit}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+            {(form.item_name.trim().length > 1 || form.item_id.trim().length > 1) && !suggestionLoading && suggestions.length === 0 && !selectedExistingItem ? (
+              <Text style={styles.suggestionMeta}>No existing match. Confirm the item ID, category, and unit before receiving a new SKU.</Text>
+            ) : null}
+            {selectedExistingItem ? (
+              <Text style={styles.suggestionMeta}>Existing inventory item selected. This receipt will reuse SKU {selectedExistingItem.itemId}; unit is locked to preserve stock history.</Text>
+            ) : null}
             {errors.item_name ? (
               <Text style={styles.errorText}>{errors.item_name}</Text>
             ) : null}
@@ -352,7 +523,8 @@ export default function ReceiveGoodsScreen() {
                 return (
                   <TouchableOpacity
                     key={u}
-                    style={[styles.chip, selected && styles.chipSelected]}
+                    style={[styles.chip, selected && styles.chipSelected, selectedExistingItem && styles.chipDisabled]}
+                    disabled={!!selectedExistingItem}
                     onPress={() => handleChange('units', u)}
                   >
                     <Text
@@ -529,6 +701,11 @@ export default function ReceiveGoodsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   scrollContent: { padding: spacing.lg, paddingBottom: spacing.xl * 2 },
+  suggestionPanel: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface, marginTop: spacing.xs, overflow: 'hidden' },
+  suggestionRow: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  suggestionName: { color: colors.textPrimary, fontWeight: '700' },
+  suggestionMeta: { color: colors.textSecondary, fontSize: 12, marginTop: 4 },
+  chipDisabled: { opacity: 0.55 },
   form: { marginTop: spacing.md },
   formGroup: { marginBottom: spacing.lg },
   row: { flexDirection: 'row', gap: spacing.sm },
@@ -604,3 +781,4 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
 });
+

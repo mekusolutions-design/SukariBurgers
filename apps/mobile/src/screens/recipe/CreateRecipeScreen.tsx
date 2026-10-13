@@ -13,11 +13,13 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useRecipeStore } from '../../features/recipe/recipeStore';
+import { useRole } from '../../hooks/useRole';
 import { colors, spacing, typography } from '../../lib/theme';
 
 export default function CreateRecipeScreen() {
   const navigation = useNavigation();
   const { addRecipe } = useRecipeStore();
+  const { canEditRecipe } = useRole();
 
   const [form, setForm] = useState({
     item_id: '',
@@ -65,6 +67,15 @@ export default function CreateRecipeScreen() {
     Alert.alert('Success', 'Recipe has been queued for sync.');
     navigation.goBack();
   };
+
+  if (!canEditRecipe) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        <Text style={{ textAlign: 'center', marginBottom: 16 }}>Only ADMIN can create or edit recipes.</Text>
+        <Text style={{ color: '#2563eb' }} onPress={() => navigation.goBack()}>Go back</Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView

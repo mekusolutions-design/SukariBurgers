@@ -17,6 +17,15 @@ export type MenuItem = {
   is_visible: boolean;
   available_quantity?: number;
   notes?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  created_at?: string;
+  createdAt?: string;
+  finished_good_id?: string | null;
+  finished_good_name?: string | null;
+  quantity_required?: number;
+  unit?: string;
+  lines?: Array<Record<string, unknown>>;
   queuedAt: string;
 };
 

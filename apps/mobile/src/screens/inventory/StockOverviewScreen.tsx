@@ -403,6 +403,33 @@ export default function StockOverviewScreen() {
           </TouchableOpacity>
         )}
 
+        {(isKitchen || isManager || isAdmin) && (
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: colors.primaryDark, marginTop: spacing.sm }]}
+            onPress={() => navigation.navigate('Production')}
+          >
+            <Text style={styles.actionButtonText}>+ Start batch</Text>
+          </TouchableOpacity>
+        )}
+
+        {(isKitchen || isManager || isAdmin) && (
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: colors.primary, marginTop: spacing.sm }]}
+            onPress={() => navigation.navigate('KitchenDisplay')}
+          >
+            <Text style={styles.actionButtonText}>Kitchen display</Text>
+          </TouchableOpacity>
+        )}
+
+        {(isKitchen || isManager || isAdmin) && (
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: colors.primaryDark, marginTop: spacing.sm }]}
+            onPress={() => navigation.navigate('ProductionHistory')}
+          >
+            <Text style={styles.actionButtonText}>Production history</Text>
+          </TouchableOpacity>
+        )}
+
         {(isKitchen || isManager) && (
           <TouchableOpacity
             style={[
