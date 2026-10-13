@@ -7,8 +7,8 @@ import type { Role } from "@/lib/constants/roles";
  *
  * Michael / product rules:
  * - Team: ADMIN only (managers must not access team module)
- * - Menu: visible to ops for read; only ADMIN can create/edit
- * - Recipes: visible to kitchen/manager; create/edit ADMIN + MANAGER
+ * - Menu: visible to ops for read; only ADMIN can create/edit/update
+ * - Recipes: visible to kitchen/manager for read; only ADMIN can create/edit/update
  */
 export const SECTION_PERMISSIONS = {
   dashboard: ["ADMIN", "MANAGER", "KITCHEN", "POS"],
@@ -42,12 +42,12 @@ export function canEditMenu(role: Role | undefined | null): boolean {
   return role === "ADMIN";
 }
 
-/** ADMIN and MANAGER may create/edit recipes. */
+/** Only ADMIN may create/edit recipes (MANAGER is read-only on recipe pages). */
 export function canEditRecipe(role: Role | undefined | null): boolean {
-  return role === "ADMIN" || role === "MANAGER";
+  return role === "ADMIN";
 }
 
-/** Only ADMIN may change another user\'s role / open Team module. */
+/** Only ADMIN may change another user's role / open Team module. */
 export function canChangeUserRole(role: Role | undefined | null): boolean {
   return role === "ADMIN";
 }
@@ -67,4 +67,3 @@ export function landingSectionFor(role: Role): Section {
 export function canSubmitClosingStock(role: Role | undefined | null): boolean {
   return role === "ADMIN" || role === "MANAGER";
 }
-

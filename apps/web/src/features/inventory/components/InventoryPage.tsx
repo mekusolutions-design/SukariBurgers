@@ -25,6 +25,8 @@ import { InventoryTable } from "./InventoryTable";
 import { LowStockBanner } from "./LowStockBanner";
 import { InventorySkeleton } from "./InventorySkeleton";
 import { useToast } from "@/providers/ToastProvider";
+import { useDebounce } from "@/hooks/use-debounce";
+
 import { ApiError } from "@/lib/api/errors";
 import {
   INGREDIENT_CATEGORY_GROUPS,
@@ -96,8 +98,57 @@ function ReceiveStockModal({
 }) {
   const [form, setForm] = useState<ReceiveFormState>({ ...EMPTY_RECEIVE_FORM });
   const [error, setError] = useState<string | null>(null);
+  /** Which field last opened the typeahead: name or sku */
+  const [suggestField, setSuggestField] = useState<"name" | "sku" | null>(null);
+  const [nearMatch, setNearMatch] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  // Suggest from either name or SKU (item_id) — Michael: match both
+  const debouncedName = useDebounce(form.item_name.trim(), 200);
+  const debouncedSku = useDebounce(form.item_id.trim(), 200);
+  const suggestQuery =
+    suggestField === "sku"
+      ? debouncedSku
+      : suggestField === "name"
+        ? debouncedName
+        : debouncedName || debouncedSku;
+
+  const suggestQ = useQuery({
+    queryKey: ["inventory", "suggest", shopId, suggestQuery],
+    queryFn: () =>
+      inventoryApi.list({
+        shopId,
+        search: suggestQuery,
+        pageSize: 8,
+      }),
+    enabled: open && suggestQuery.length >= 1,
+  });
+
+  const suggestions = (suggestQ.data?.items ?? suggestQ.data ?? []) as Array<{
+    itemId?: string;
+    item_id?: string;
+    name?: string;
+    itemName?: string;
+    category?: string;
+    unit?: string;
+    units?: string;
+  }>;
+
+  function applySuggestion(s: (typeof suggestions)[0]) {
+    const id = s.itemId || s.item_id || "";
+    const name = s.name || s.itemName || "";
+    const cat = s.category || form.category;
+    const unit = s.unit || s.units || form.units;
+    setForm((prev) => ({
+      ...prev,
+      item_id: id,
+      item_name: name,
+      category: cat as typeof prev.category,
+      units: unit,
+    }));
+    setSuggestField(null);
+    setNearMatch(null);
+  }
 
   useEffect(() => {
     const approvedRaw =
@@ -188,25 +239,105 @@ function ReceiveStockModal({
         {error ? <Alert tone="danger" title={error} /> : null}
 
         <div className="grid grid-cols-2 gap-3">
-          <div>
+          <div className="relative">
             <label className="mb-1 block text-xs font-medium text-ink-muted">
               Item ID / SKU *
             </label>
             <Input
               value={form.item_id}
-              onChange={(e) => setForm({ ...form, item_id: e.target.value })}
-              placeholder="e.g. ST300"
+              onChange={(e) => {
+                setForm({ ...form, item_id: e.target.value });
+                setSuggestField("sku");
+                setNearMatch(null);
+              }}
+              onFocus={() => setSuggestField("sku")}
+              placeholder="Type SKU or code (e.g. ST300)"
             />
+            {suggestField === "sku" &&
+            suggestQuery.length >= 1 &&
+            suggestions.length > 0 ? (
+              <div className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-border bg-white shadow-lg">
+                {suggestions.map((s) => {
+                  const id = s.itemId || s.item_id || "";
+                  const name = s.name || s.itemName || id;
+                  return (
+                    <button
+                      key={`sku-${id}`}
+                      type="button"
+                      className="flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-surface-muted"
+                      onClick={() => applySuggestion(s)}
+                    >
+                      <span className="font-medium tabular-nums">{id}</span>
+                      <span className="text-xs text-ink-muted">
+                        {name}
+                        {s.category ? ` · ${s.category}` : ""}
+                        {s.unit || s.units ? ` · ${s.unit || s.units}` : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
-          <div>
+          <div className="relative">
             <label className="mb-1 block text-xs font-medium text-ink-muted">
               Item name *
             </label>
             <Input
               value={form.item_name}
-              onChange={(e) => setForm({ ...form, item_name: e.target.value })}
-              placeholder="e.g. Exe Flour"
+              onChange={(e) => {
+                setForm({ ...form, item_name: e.target.value });
+                setSuggestField("name");
+                setNearMatch(null);
+              }}
+              onFocus={() => setSuggestField("name")}
+              placeholder="Type name to search previous SKUs…"
             />
+            {suggestField === "name" &&
+            suggestQuery.length >= 1 &&
+            suggestions.length > 0 ? (
+              <div className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-border bg-white shadow-lg">
+                {suggestions.map((s) => {
+                  const id = s.itemId || s.item_id || "";
+                  const name = s.name || s.itemName || id;
+                  return (
+                    <button
+                      key={`name-${id}`}
+                      type="button"
+                      className="flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-surface-muted"
+                      onClick={() => applySuggestion(s)}
+                    >
+                      <span className="font-medium">{name}</span>
+                      <span className="text-xs text-ink-muted">
+                        {id}
+                        {s.category ? ` · ${s.category}` : ""}
+                        {s.unit || s.units ? ` · ${s.unit || s.units}` : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {nearMatch ? (
+              <p className="mt-1 text-xs text-amber-700">
+                Did you mean{" "}
+                <button
+                  type="button"
+                  className="font-semibold underline"
+                  onClick={() => {
+                    const match = suggestions.find(
+                      (s) =>
+                        (s.name || s.itemName || "").toUpperCase() ===
+                        nearMatch.toUpperCase(),
+                    );
+                    if (match) applySuggestion(match);
+                  }}
+                >
+                  {nearMatch}
+                </button>
+                ?
+              </p>
+            ) : null}
           </div>
         </div>
 

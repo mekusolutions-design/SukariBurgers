@@ -618,4 +618,124 @@ export class InventoryService {
       this.logger.warn(`Failed to broadcast stock update: ${message}`);
     }
   }
+  /**
+   * Shop-scoped SKU suggestions for receiving / recipe pickers.
+   * Prefers items that already have inventory projection (received or stocked).
+   */
+  async suggest(opts: {
+    shopId?: string;
+    q?: string;
+    limit?: number;
+  }): Promise<{
+    success: boolean;
+    items: Array<{
+      itemId: string;
+      name: string;
+      category: string;
+      unit: string;
+      availableStock: number;
+      lastReceivedAt: string | null;
+      avgUnitCost: number;
+    }>;
+    count: number;
+  }> {
+    const shopId = opts.shopId || '1';
+    const q = String(opts.q ?? '').trim();
+    const take = Math.min(Math.max(opts.limit ?? 10, 1), 20);
+
+    const rows = await this.prisma.inventoryProjection.findMany({
+      where: {
+        shop_id: shopId,
+        ...(q
+          ? {
+              OR: [
+                { item_id: { contains: q, mode: 'insensitive' } },
+                { item: { name: { contains: q, mode: 'insensitive' } } },
+              ],
+            }
+          : {}),
+      },
+      include: {
+        item: {
+          select: {
+            item_id: true,
+            name: true,
+            category: true,
+            unit: true,
+          },
+        },
+      },
+      orderBy: [{ last_received_at: 'desc' }, { item_id: 'asc' }],
+      take: take * 3,
+    });
+
+    const items: Array<{
+      itemId: string;
+      name: string;
+      category: string;
+      unit: string;
+      availableStock: number;
+      lastReceivedAt: string | null;
+      avgUnitCost: number;
+    }> = [];
+
+    const ql = q.toLowerCase();
+    for (const row of rows) {
+      if (this.isFinishedCategory(row.item?.category ?? (row as { category?: string }).category)) {
+        continue;
+      }
+      const itemId = row.item_id;
+      const name = row.item?.name ?? itemId;
+      const category = row.item?.category ?? '';
+      const unit = row.item?.unit ?? 'pcs';
+      if (ql) {
+        const idL = itemId.toLowerCase();
+        const nameL = name.toLowerCase();
+        const hay = `${idL} ${nameL}`;
+        // Match name OR SKU (item_id): contains, prefix, or name-token prefix
+        const skuHit =
+          idL === ql || idL.startsWith(ql) || idL.includes(ql);
+        const nameHit =
+          nameL.startsWith(ql) ||
+          nameL.includes(ql) ||
+          nameL.split(/\s+/).some((tok) => tok.startsWith(ql));
+        if (!skuHit && !nameHit && !hay.includes(ql)) continue;
+      }
+      items.push({
+        itemId,
+        name,
+        category: String(category ?? ''),
+        unit: String(unit ?? 'pcs'),
+        availableStock: Number(row.available_stock ?? 0),
+        lastReceivedAt: row.last_received_at
+          ? row.last_received_at.toISOString()
+          : null,
+        avgUnitCost: Number(row.avg_unit_cost ?? 0),
+      });
+      if (items.length >= take) break;
+    }
+
+    // Rank: exact SKU → SKU prefix → name prefix → name contains
+    if (ql) {
+      const rank = (row: { itemId: string; name: string }) => {
+        const idL = row.itemId.toLowerCase();
+        const nameL = row.name.toLowerCase();
+        if (idL === ql) return 0;
+        if (idL.startsWith(ql)) return 1;
+        if (nameL === ql) return 2;
+        if (nameL.startsWith(ql)) return 3;
+        if (idL.includes(ql)) return 4;
+        if (nameL.includes(ql)) return 5;
+        return 6;
+      };
+      items.sort((a, b) => {
+        const d = rank(a) - rank(b);
+        if (d !== 0) return d;
+        return a.name.localeCompare(b.name);
+      });
+    }
+
+    return { success: true, items, count: items.length };
+  }
+
 }

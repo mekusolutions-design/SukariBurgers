@@ -27,6 +27,7 @@ export const endpoints = {
     item: (itemId: string) => `/inventory/${itemId}`,
     batches: (itemId: string) => `/inventory/${itemId}/batches`,
     alerts: "/inventory/alerts",
+    suggest: "/inventory/suggest",
   },
 
   received: {

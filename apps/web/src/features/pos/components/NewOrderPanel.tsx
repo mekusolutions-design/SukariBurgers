@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 
@@ -98,6 +98,15 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
   const [draftQty, setDraftQty] = useState(1);
   const [draftSelections, setDraftSelections] = useState<CartSelection[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [posSearch, setPosSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [debouncedQ, setDebouncedQ] = useState("");
+  /** When set, ComboPicker opens that combo (from POS search). */
+  const [openComboId, setOpenComboId] = useState<string | null>(null);
+
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -121,6 +130,12 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
     enabled: open,
   });
 
+
+  const combosQuery = useQuery({
+    queryKey: ["pos", "combos", shopId],
+    queryFn: () => menuApi.listCombos(shopId),
+    enabled: open,
+  });
   const total = useMemo(() => {
     const menuTotal = cart.reduce(
       (sum, line) => sum + line.menu.sellingPrice * line.quantity,
@@ -318,7 +333,120 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
     });
   }
 
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedQ(posSearch.trim()), 200);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [posSearch]);
+
   const menus = (menuQuery.data ?? []).filter((m) => m.isVisible !== false);
+
+  /** Light typo tolerance: allow 1-char edit distance for short queries */
+  function fuzzyMatch(name: string, q: string): boolean {
+    const n = name.toLowerCase();
+    const query = q.toLowerCase();
+    if (n.includes(query)) return true;
+    // word-boundary partial
+    const words = n.split(/\s+/);
+    if (words.some((w) => w.startsWith(query) || query.split(/\s+/).every((qw) => n.includes(qw)))) return true;
+    // simple 1-edit for length >= 4
+    if (query.length >= 4 && query.length <= n.length + 1) {
+      let mismatches = 0;
+      let j = 0;
+      for (let i = 0; i < query.length && j < n.length; i++) {
+        if (query[i] === n[j]) { j++; continue; }
+        mismatches++;
+        if (mismatches > 1) return false;
+        // try skip in query or name
+        if (i + 1 < query.length && query[i + 1] === n[j]) continue;
+        j++;
+        i--;
+      }
+      return mismatches <= 1;
+    }
+    return false;
+  }
+
+  type SearchHit = {
+    kind: "item" | "combo";
+    id: string;
+    name: string;
+    price: number;
+    category?: string;
+    available: boolean;
+    menu?: MenuItem;
+    combo?: { comboId: string; name: string; sellingPrice: number };
+  };
+
+
+  function selectSearchHit(hit: {
+    kind: "item" | "combo";
+    id: string;
+    name: string;
+    price: number;
+    available: boolean;
+    menu?: MenuItem;
+    combo?: { comboId: string; name: string; sellingPrice: number };
+  }) {
+    if (!hit.available) return;
+    if (hit.kind === "item" && hit.menu) {
+      openChooser(hit.menu);
+    } else if (hit.kind === "combo" && hit.combo) {
+      // Close search and auto-open ComboPicker on the chosen combo
+      setOpenComboId(hit.combo.comboId);
+    }
+    setPosSearch("");
+    setSearchOpen(false);
+  }
+
+  const searchResults = useMemo((): SearchHit[] => {
+    const q = debouncedQ;
+    if (q.length < 1) return [];
+    const hits: SearchHit[] = [];
+    for (const m of menus) {
+      if (!fuzzyMatch(m.name, q)) continue;
+      hits.push({
+        kind: "item",
+        id: m.menuId,
+        name: m.name,
+        price: m.sellingPrice,
+        category: m.category || undefined,
+        available: (m.maxPortions ?? 1) > 0 && m.isAvailable !== false,
+        menu: m,
+      });
+    }
+    const combos = combosQuery.data ?? [];
+    for (const c of combos) {
+      if (!fuzzyMatch(c.name, q)) continue;
+      hits.push({
+        kind: "combo",
+        id: c.comboId,
+        name: c.name,
+        price: c.sellingPrice,
+        category: "Combo",
+        available: true,
+        combo: c,
+      });
+    }
+    // rank: prefix first, then substring
+    const ql = q.toLowerCase();
+    hits.sort((a, b) => {
+      const ap = a.name.toLowerCase().startsWith(ql) ? 0 : 1;
+      const bp = b.name.toLowerCase().startsWith(ql) ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return a.name.localeCompare(b.name);
+    });
+    return hits.slice(0, 10);
+  }, [debouncedQ, menus, combosQuery.data]);
+
+  useEffect(() => {
+    setHighlightIdx(0);
+  }, [debouncedQ]);
+
+
   const showTable =
     orderType === "dine_in" || orderType === "dine-in";
 
@@ -559,13 +687,90 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
             <CardHeader>
               <CardTitle>Menu</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-wrap gap-2">
+            <CardContent className="flex flex-col gap-3">
+              <div className="relative">
+                <Input
+                  ref={searchRef}
+                  placeholder="Search menu items & combos…"
+                  value={posSearch}
+                  onChange={(e) => {
+                    setPosSearch(e.target.value);
+                    setSearchOpen(true);
+                  }}
+                  onFocus={() => setSearchOpen(true)}
+                  onKeyDown={(e) => {
+                    if (!searchOpen || searchResults.length === 0) {
+                      if (e.key === "Escape") setSearchOpen(false);
+                      return;
+                    }
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setHighlightIdx((i) => Math.min(i + 1, searchResults.length - 1));
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setHighlightIdx((i) => Math.max(i - 1, 0));
+                    } else if (e.key === "Enter") {
+                      e.preventDefault();
+                      const hit = searchResults[highlightIdx];
+                      if (hit) selectSearchHit(hit);
+                    } else if (e.key === "Escape") {
+                      setSearchOpen(false);
+                      setPosSearch("");
+                    }
+                  }}
+                  className="w-full"
+                  autoFocus
+                />
+                {searchOpen && debouncedQ.length >= 1 ? (
+                  <div className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-border bg-white shadow-lg">
+                    {searchResults.length === 0 ? (
+                      <p className="px-3 py-2 text-sm text-ink-muted">
+                        No menu item or combo found
+                      </p>
+                    ) : (
+                      searchResults.map((hit, idx) => (
+                        <button
+                          key={`${hit.kind}-${hit.id}`}
+                          type="button"
+                          disabled={!hit.available}
+                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm ${
+                            idx === highlightIdx ? "bg-primary-50" : ""
+                          } ${!hit.available ? "opacity-40" : "hover:bg-surface-muted"}`}
+                          onMouseEnter={() => setHighlightIdx(idx)}
+                          onClick={() => hit.available && selectSearchHit(hit)}
+                        >
+                          <div>
+                            <span className="font-medium text-ink">{hit.name}</span>
+                            <span className="ml-2 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] uppercase text-ink-muted">
+                              {hit.kind === "combo" ? "Combo" : "Item"}
+                            </span>
+                            {hit.category ? (
+                              <span className="ml-1 text-xs text-ink-faint">
+                                {hit.category}
+                              </span>
+                            ) : null}
+                            {!hit.available ? (
+                              <span className="ml-2 text-xs text-red-600">
+                                Unavailable
+                              </span>
+                            ) : null}
+                          </div>
+                          <span className="tabular-nums text-ink-muted">
+                            {formatCurrency(hit.price)}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
               {menuQuery.isPending ? (
                 <p className="text-sm text-ink-muted">Loading menu…</p>
               ) : menus.length === 0 ? (
                 <p className="text-sm text-ink-muted">No menu items yet.</p>
               ) : (
-                menus.map((menu) => (
+                <div className="flex flex-wrap gap-2">
+                {menus.map((menu) => (
                   <button
                     key={menu.menuId}
                     type="button"
@@ -582,13 +787,16 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
                         : ` · ${menu.maxPortions} left`}
                     </div>
                   </button>
-                ))
+                ))}
+                </div>
               )}
             </CardContent>
           </Card>
 
           <ComboPicker
             shopId={shopId}
+            openComboId={openComboId}
+            onOpenComboConsumed={() => setOpenComboId(null)}
             onAdd={(line) => {
               setComboCart((prev) => [
                 ...prev,

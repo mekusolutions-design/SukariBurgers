@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -21,6 +21,9 @@ export type ComboSelectionPayload = {
 export function ComboPicker({
   shopId,
   onAdd,
+  /** When set (e.g. from POS search), open this combo and clear picks. Parent may reset to null after. */
+  openComboId = null,
+  onOpenComboConsumed,
 }: {
   shopId: string;
   onAdd: (line: {
@@ -30,6 +33,8 @@ export function ComboPicker({
     quantity: number;
     combo_selections: ComboSelectionPayload[];
   }) => void;
+  openComboId?: string | null;
+  onOpenComboConsumed?: () => void;
 }) {
   const combosQ = useQuery({
     queryKey: ["menu-combos", shopId],
@@ -52,6 +57,20 @@ export function ComboPicker({
   const [picks, setPicks] = useState<Record<number, Record<string, number>>>(
     {},
   );
+
+  // Auto-open when POS search (or parent) requests a combo
+  useEffect(() => {
+    if (!openComboId) return;
+    const exists = combos.some((c) => c.comboId === openComboId);
+    if (exists) {
+      setActiveComboId(openComboId);
+      setComboQty(1);
+      setPicks({});
+    }
+    onOpenComboConsumed?.();
+    // Intentionally only react to openComboId (and combos once loaded)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openComboId, combos]);
 
   const active = combos.find((c) => c.comboId === activeComboId) ?? null;
 

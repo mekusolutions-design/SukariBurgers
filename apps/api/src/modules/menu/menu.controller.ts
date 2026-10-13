@@ -7,6 +7,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -27,6 +28,12 @@ import type { CreateMenuDto } from './dto/create-menu.dto';
 import { CreateMenuSchema } from './dto/create-menu.dto';
 import type { MenuItemDto } from './dto/menu-item.dto';
 import { MenuItemSchema } from './dto/menu-item.dto';
+import type { UpdateCatalogItemDto } from './dto/update-catalog-item.dto';
+import { UpdateCatalogItemSchema } from './dto/update-catalog-item.dto';
+import type { UpdateComboDto } from './dto/update-combo.dto';
+import { UpdateComboSchema } from './dto/update-combo.dto';
+import type { AdjustMenuDto } from './dto/adjust-menu.dto';
+import { AdjustMenuSchema } from './dto/adjust-menu.dto';
 import { MenuService } from './menu.service';
 import { SellableResolutionService } from './sellable-resolution.service';
 import { MenuCategoryService } from './menu-category.service';
@@ -160,7 +167,23 @@ export class MenuController {
     return this.menuService.addMenuItem(dto, user.id);
   }
 
-  @Get(':menuId/availability')
+  
+  @Patch(':menuId/adjust')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Adjust menu item name, price, and recipe components (ADMIN)',
+  })
+  @UsePipes(new ZodValidationPipe(AdjustMenuSchema))
+  async adjustMenu(
+    @CurrentShop() scopedShop: string,
+    @Param('menuId') menuId: string,
+    @Body() dto: AdjustMenuDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.menuService.adjustMenu(menuId, dto, user.id, scopedShop);
+  }
+
+@Get(':menuId/availability')
   @Roles('POS', 'MANAGER', 'KITCHEN', 'ADMIN')
   @ApiOperation({
     summary: 'Check real-time menu availability (fixed + choice pools)',
@@ -204,6 +227,38 @@ export class MenuController {
       },
       user.id,
     );
+  }
+
+  
+  @Patch('catalog-items/:menuItemId')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Update catalog menu item (name, price, active)' })
+  @UsePipes(new ZodValidationPipe(UpdateCatalogItemSchema))
+  async updateCatalogItem(
+    @CurrentShop() scopedShop: string,
+    @Param('menuItemId') menuItemId: string,
+    @Body() dto: UpdateCatalogItemDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.catalogMenuItemService.update(
+      scopedShop,
+      menuItemId,
+      dto,
+      user.id,
+    );
+  }
+
+  @Patch('combos/:comboId')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Update combo (name, price, active)' })
+  @UsePipes(new ZodValidationPipe(UpdateComboSchema))
+  async updateComboRoute(
+    @CurrentShop() scopedShop: string,
+    @Param('comboId') comboId: string,
+    @Body() dto: UpdateComboDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.comboService.update(scopedShop, comboId, dto, user.id);
   }
 
   @Get('categories')
@@ -316,7 +371,7 @@ export class MenuController {
 
 
   @Post('catalog/backfill')
-  @Roles('ADMIN', 'MANAGER')
+  @Roles('ADMIN')
   @ApiOperation({
     summary: 'Backfill MenuCatalogProjection / categories / combos from events',
   })

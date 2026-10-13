@@ -206,6 +206,55 @@ export const inventoryApi = {
   },
 
   /** Full GRN payload — aligned with mobile ReceiveGoodsScreen */
+
+  async suggest(
+    shopId: string,
+    q: string,
+    limit = 10,
+  ): Promise<
+    Array<{
+      itemId: string;
+      name: string;
+      category: string;
+      unit: string;
+      availableStock: number;
+      lastReceivedAt: string | null;
+      avgUnitCost: number;
+    }>
+  > {
+    try {
+      const { data } = await apiClient.get(
+        `${endpoints.inventory.suggest}${buildQueryString({
+          shopId,
+          q,
+          limit,
+        })}`,
+      );
+      const root = (data ?? {}) as Record<string, unknown>;
+      const rows = Array.isArray(root.items)
+        ? root.items
+        : Array.isArray(data)
+          ? data
+          : [];
+      return rows.map((raw) => {
+        const r = raw as Record<string, unknown>;
+        return {
+          itemId: String(r.itemId ?? r.item_id ?? ""),
+          name: String(r.name ?? r.itemName ?? ""),
+          category: String(r.category ?? ""),
+          unit: String(r.unit ?? r.units ?? "pcs"),
+          availableStock: Number(r.availableStock ?? r.available_stock ?? 0),
+          lastReceivedAt: (r.lastReceivedAt ?? r.last_received_at ?? null) as
+            | string
+            | null,
+          avgUnitCost: Number(r.avgUnitCost ?? r.avg_unit_cost ?? 0),
+        };
+      });
+    } catch (error) {
+      throw toApiError(error);
+    }
+  },
+
   async receiveGoods(input: ReceiveGoodsInput): Promise<void> {
     try {
       const qty = Number(input.quantity);

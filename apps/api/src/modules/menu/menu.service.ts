@@ -499,7 +499,7 @@ export class MenuService {
     const events = await this.prisma.event.findMany({
       where: {
         shop_id: shopId,
-        event_type: { in: ['menu_created', 'menu_item_added'] },
+        event_type: { in: ['menu_created', 'menu_item_added', 'menu_adjusted'] },
       },
       orderBy: { created_at: 'asc' },
       take: 2000,
@@ -609,6 +609,60 @@ export class MenuService {
         map.set(draft.componentKey, draft);
         linesByMenu.set(menuId, map);
       }
+
+      if (event.event_type === 'menu_adjusted') {
+        const menuId = asString(payload.menu_id ?? payload.menuId);
+        if (!menuId || !byId.has(menuId)) continue;
+        const existing = byId.get(menuId)!;
+        if (payload.name != null) {
+          existing.name = asString(payload.name, existing.name);
+        }
+        if (payload.selling_price != null || payload.sellingPrice != null) {
+          existing.sellingPrice = asNumber(
+            payload.selling_price ?? payload.sellingPrice,
+            existing.sellingPrice,
+          );
+        }
+        if (payload.category !== undefined) {
+          existing.category =
+            asString(payload.category) || null;
+        }
+        if (payload.is_available !== undefined || payload.isAvailable !== undefined) {
+          existing.isAvailable =
+            payload.is_available !== false && payload.isAvailable !== false;
+        }
+        if (payload.is_visible !== undefined || payload.isVisible !== undefined) {
+          existing.isVisible =
+            payload.is_visible !== false && payload.isVisible !== false;
+        }
+        if (payload.tax_rate != null || payload.taxRate != null) {
+          existing.taxRate = asNumber(
+            payload.tax_rate ?? payload.taxRate,
+            existing.taxRate,
+          );
+        }
+        if (payload.menu_code != null || payload.menuCode != null) {
+          const code = asString(payload.menu_code ?? payload.menuCode);
+          if (code) existing.menuCode = code;
+        }
+        existing.createdAt =
+          asString(payload.adjusted_at) ||
+          event.created_at.toISOString() ||
+          existing.createdAt;
+
+        const payloadLines = Array.isArray(payload.lines) ? payload.lines : null;
+        if (payloadLines) {
+          const map = new Map<string, LineDraft>();
+          payloadLines.forEach((raw, idx) => {
+            const row = asRecord(raw);
+            const draft = this.draftFromPayload(row, idx);
+            map.set(draft.componentKey, draft);
+          });
+          linesByMenu.set(menuId, map);
+        }
+        byId.set(menuId, existing);
+      }
+
     }
 
     // Preload all shop stock once (avoids N+1 inventoryProjection queries)
@@ -952,6 +1006,225 @@ export class MenuService {
       menuId,
       eventId: event.id,
       message: 'Menu item created successfully',
+    };
+  }
+
+
+  /**
+   * ADMIN adjust: name, price, and full component set in one transaction event.
+   * Past orders keep their line prices; recipe changes apply going forward only.
+   */
+  async adjustMenu(
+    menuId: string,
+    dto: {
+      name?: string;
+      menu_code?: string | null;
+      selling_price?: number;
+      tax_rate?: number;
+      is_available?: boolean;
+      is_visible?: boolean;
+      category?: string | null;
+      notes?: string | null;
+      preparation_time_minutes?: number | null;
+      image_url?: string | null;
+      lines?: Array<Record<string, unknown>>;
+      expected_updated_at?: string | null;
+    },
+    actorUserId: string,
+    shopId: string = '1',
+  ) {
+    const listed = await this.listMenus(shopId);
+    const current = listed.items.find((m) => m.menuId === menuId);
+    if (!current) {
+      throw new BadRequestException(`Menu item not found: ${menuId}`);
+    }
+    if (current.status && current.status !== 'active') {
+      // still allow adjust of visible catalog rows
+    }
+
+    if (dto.expected_updated_at) {
+      const expected = new Date(dto.expected_updated_at).getTime();
+      const actual = current.createdAt
+        ? new Date(current.createdAt).getTime()
+        : 0;
+      if (
+        Number.isFinite(expected) &&
+        Number.isFinite(actual) &&
+        actual > expected + 500
+      ) {
+        throw new BadRequestException({
+          message:
+            'This menu item was changed by someone else. Reload and try again.',
+          code: 'MENU_CONFLICT',
+          expected: dto.expected_updated_at,
+          actual: current.createdAt,
+        });
+      }
+    }
+
+    const name =
+      dto.name !== undefined ? String(dto.name).trim() : current.name;
+    if (!name) throw new BadRequestException('Name is required');
+
+    const sellingPrice =
+      dto.selling_price !== undefined
+        ? Number(dto.selling_price)
+        : current.sellingPrice;
+    if (!Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      throw new BadRequestException('selling_price must be 0 or more');
+    }
+
+    let enriched: NormalizedLine[] | null = null;
+    if (dto.lines && dto.lines.length > 0) {
+      const asDto = {
+        name,
+        selling_price: sellingPrice,
+        lines: dto.lines,
+      } as CreateMenuDto;
+      // reuse normalize via a minimal shape
+      const lines = normalizeLines({
+        name,
+        selling_price: sellingPrice,
+        lines: dto.lines.map((l) => ({
+          component_type: (l.component_type as string) || 'FIXED',
+          component_key: (l.component_key as string) || undefined,
+          finished_good_id: (l.finished_good_id as string) || undefined,
+          finished_good_name: (l.finished_good_name as string) || undefined,
+          finished_good_category_id:
+            (l.finished_good_category_id as string) || undefined,
+          finished_good_category_code:
+            (l.finished_good_category_code as string) || undefined,
+          finished_good_category_name:
+            (l.finished_good_category_name as string) || undefined,
+          option_item_ids: Array.isArray(l.option_item_ids)
+            ? (l.option_item_ids as string[])
+            : undefined,
+          quantity_required: Number(l.quantity_required ?? 1),
+          unit: String(l.unit ?? 'pcs'),
+          min_select: l.min_select as number | undefined,
+          max_select: l.max_select as number | undefined,
+          allow_repeat: l.allow_repeat as boolean | undefined,
+        })),
+      } as CreateMenuDto);
+      if (lines.length === 0) {
+        throw new BadRequestException('At least one component is required');
+      }
+      enriched = [];
+      for (const line of lines) {
+        if (
+          (line.component_type === 'CHOICE' ||
+            line.component_type === 'MULTI_CHOICE') &&
+          !(line.option_item_ids && line.option_item_ids.length) &&
+          !line.finished_good_category_id
+        ) {
+          throw new BadRequestException(
+            `CHOICE line ${line.component_key} needs inventory SKUs or a category`,
+          );
+        }
+        if (
+          (line.component_type === 'FIXED' ||
+            line.component_type === 'INVENTORY') &&
+          !line.finished_good_id
+        ) {
+          throw new BadRequestException(
+            `FIXED/INVENTORY line ${line.component_key} needs an item id`,
+          );
+        }
+        enriched.push(line);
+      }
+    }
+
+    const previous = {
+      name: current.name,
+      selling_price: current.sellingPrice,
+      lines: (current.lines ?? []).map((l) => ({
+        component_key: l.componentKey,
+        component_type: l.componentType,
+        finished_good_id: l.finishedGoodId,
+        finished_good_name: l.finishedGoodName,
+        quantity_required: l.quantityRequired,
+        unit: l.unit,
+        option_item_ids: (l.options ?? []).map((o) => o.finishedGoodId),
+      })),
+    };
+
+    const adjustedAt = new Date().toISOString();
+    const primary =
+      enriched?.find((l) => l.component_type === 'FIXED') ??
+      enriched?.[0] ??
+      null;
+
+    await this.eventStore.appendEvent({
+      event_type: 'menu_adjusted',
+      actor_user_id: actorUserId,
+      idempotency_key: `menu-adjust-${menuId}-${Date.now()}`,
+      item_id: primary?.finished_good_id ?? current.finishedGoodId ?? menuId,
+      total_cost: sellingPrice,
+      payload: {
+        menu_id: menuId,
+        menu_code:
+          dto.menu_code !== undefined && dto.menu_code !== null && String(dto.menu_code).trim()
+            ? String(dto.menu_code).trim()
+            : current.menuCode,
+        name,
+        selling_price: sellingPrice,
+        tax_rate:
+          dto.tax_rate !== undefined
+            ? Number(dto.tax_rate)
+            : current.taxRate,
+        category: dto.category !== undefined ? dto.category : current.category,
+        is_available:
+          dto.is_available !== undefined
+            ? dto.is_available
+            : current.isAvailable,
+        is_visible:
+          dto.is_visible !== undefined ? dto.is_visible : current.isVisible,
+        notes: dto.notes !== undefined ? dto.notes : null,
+        preparation_time_minutes:
+          dto.preparation_time_minutes !== undefined
+            ? dto.preparation_time_minutes
+            : null,
+        image_url: dto.image_url !== undefined ? dto.image_url : null,
+        lines: enriched
+          ? enriched
+          : previous.lines.map((l) => ({
+              component_key: l.component_key,
+              component_type: l.component_type,
+              finished_good_id: l.finished_good_id,
+              finished_good_name: l.finished_good_name,
+              quantity_required: l.quantity_required,
+              unit: l.unit,
+              option_item_ids: l.option_item_ids,
+            })),
+        previous,
+        adjusted_at: adjustedAt,
+        shop_id: shopId,
+      },
+    });
+
+    this.invalidateListMenusCache(shopId);
+
+    // Duplicate-name warning (non-blocking metadata)
+    const nameClash = listed.items.some(
+      (m) =>
+        m.menuId !== menuId &&
+        m.isVisible !== false &&
+        m.name.trim().toLowerCase() === name.trim().toLowerCase(),
+    );
+
+    this.logger.log(
+      `Menu adjusted: ${menuId} → ${name} @ ${sellingPrice} by ${actorUserId}`,
+    );
+
+    return {
+      success: true,
+      menuId,
+      name,
+      sellingPrice,
+      nameClashWarning: nameClash
+        ? `Another active item is already named ${name}`
+        : null,
+      adjustedAt,
     };
   }
 

@@ -29,6 +29,8 @@ import { menuApi } from "../api";
 import type { CreateMenuInput } from "../schema";
 import { useAuthStore } from "@/store/auth";
 import { canEditMenu } from "@/lib/permissions";
+import { EditCatalogItemModal, type CatalogItemEdit } from "./EditCatalogItemModal";
+import { adminEditApi, type AdjustMenuBody } from "../adminEditApi";
 
 type LineKind = "FIXED" | "CHOICE";
 type LineForm = {
@@ -89,6 +91,8 @@ export function CatalogPage({ shopId }: { shopId: string }) {
   const qc = useQueryClient();
   const role = useAuthStore((s) => s.user?.role);
   const canEdit = canEditMenu(role);
+  const [editItem, setEditItem] = useState<CatalogItemEdit | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
   const menuQ = useQuery({
     queryKey: ["menu", "list", shopId],
     queryFn: () => menuApi.list(shopId),
@@ -210,6 +214,46 @@ export function CatalogPage({ shopId }: { shopId: string }) {
     },
     onError: (err) =>
       setItemError(err instanceof ApiError ? err.message : "Create failed"),
+  });
+
+
+  const updateCatalog = useMutation({
+    mutationFn: async (payload: {
+      menuItemId: string;
+      name: string;
+      menu_code?: string | null;
+      category?: string | null;
+      selling_price: number;
+      tax_rate?: number;
+      active: boolean;
+      is_available?: boolean;
+      is_visible?: boolean;
+      lines?: AdjustMenuBody["lines"];
+      expected_updated_at?: string | null;
+    }) => {
+      if (!canEditMenu(useAuthStore.getState().user?.role)) {
+        return Promise.reject(new Error("Only ADMIN can edit the menu"));
+      }
+      // Full domain edit via adjust (event-sourced menu_adjusted) — create field parity
+      return adminEditApi.adjustMenu(payload.menuItemId, {
+        name: payload.name,
+        menu_code: payload.menu_code,
+        category: payload.category,
+        selling_price: payload.selling_price,
+        tax_rate: payload.tax_rate,
+        active: payload.active,
+        is_available: payload.is_available ?? payload.active,
+        is_visible: payload.is_visible ?? payload.active,
+        lines: payload.lines,
+        expected_updated_at: payload.expected_updated_at,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["menu"] });
+      qc.invalidateQueries({ queryKey: ["pos"] });
+      setEditOpen(false);
+      setEditItem(null);
+    },
   });
 
   function submitMenuItem() {
@@ -580,6 +624,11 @@ export function CatalogPage({ shopId }: { shopId: string }) {
                     <TableHeaderCell className="text-right">
                       Food cost %
                     </TableHeaderCell>
+                    {canEdit ? (
+                      <TableHeaderCell className="text-right">
+                        Action
+                      </TableHeaderCell>
+                    ) : null}
                   </tr>
                 </TableHead>
                 <TableBody>
@@ -654,6 +703,30 @@ export function CatalogPage({ shopId }: { shopId: string }) {
                           ? "—"
                           : `${(foodPct * 100).toFixed(1)}%`}
                       </TableCell>
+                      {canEdit ? (
+                        <TableCell className="text-right">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              setEditItem({
+                                menuItemId: it.menuId,
+                                name: it.name,
+                                sellingPrice: it.sellingPrice,
+                                active: it.isVisible !== false && it.isAvailable !== false,
+                                menuCode: it.menuCode,
+                                category: it.category,
+                                taxRate: it.taxRate,
+                                menu: it,
+                                expectedUpdatedAt: it.createdAt ?? null,
+                              });
+                              setEditOpen(true);
+                            }}
+                          >
+                            Adjust
+                          </Button>
+                        </TableCell>
+                      ) : null}
                     </TableRow>
                     );
                   })}
@@ -965,6 +1038,25 @@ export function CatalogPage({ shopId }: { shopId: string }) {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <EditCatalogItemModal
+        item={editItem}
+        open={editOpen}
+        shopId={shopId}
+        allMenuNames={menuItems.map((m) => m.name)}
+        onClose={() => {
+          setEditOpen(false);
+          setEditItem(null);
+        }}
+        onSave={async (patch) => {
+          if (!editItem) return;
+          await updateCatalog.mutateAsync({
+            menuItemId: editItem.menuItemId,
+            ...patch,
+          });
+        }}
+      />
+
     </div>
   );
 }
