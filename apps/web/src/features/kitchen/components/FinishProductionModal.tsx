@@ -321,33 +321,43 @@ export function FinishProductionModal({
       ? expectedYieldKg - actualYieldKg
       : null;
 
-  // Live WAC for input lines (Michael FEFO/WAC — no hand-typed cost)
+  // Fetch live WAC for all input lines in one request.
   useEffect(() => {
     let cancelled = false;
+
     (async () => {
-      const next = [...inputs];
-      let changed = false;
-      for (let i = 0; i < next.length; i++) {
-        const row = next[i];
-        if (!row?.itemId) continue;
-        try {
-          const { data } = await apiClient.get(
-            `${endpoints.costing.sku(row.itemId)}${buildQueryString({
-              shopId: "1",
-            })}`,
-          );
-          const root = (data ?? {}) as Record<string, unknown>;
-          const wac = Number(root.avgUnitCost ?? root.avg_unit_cost ?? 0);
-          if (wac > 0 && row.unitCost !== wac) {
-            next[i] = { ...row, unitCost: wac };
-            changed = true;
-          }
-        } catch {
-          /* keep existing */
-        }
+      const itemIds = [...new Set(
+        inputs.map((row) => row.itemId.trim()).filter(Boolean),
+      )];
+
+      if (itemIds.length === 0) return;
+
+      try {
+        const { data } = await apiClient.get(
+          `${endpoints.costing.skuCosts}${buildQueryString({
+            shopId: "1",
+            itemIds: itemIds.join(","),
+          })}`,
+        );
+
+        const root = (data ?? {}) as Record<string, unknown>;
+        const costs = (root.costs ?? {}) as Record<string, unknown>;
+
+        if (cancelled) return;
+
+        setInputs((current) =>
+          current.map((row) => {
+            const wac = Number(costs[row.itemId.trim()] ?? 0);
+            return wac > 0 && row.unitCost !== wac
+              ? { ...row, unitCost: wac }
+              : row;
+          }),
+        );
+      } catch {
+        // Keep existing costs if the live costing request fails.
       }
-      if (!cancelled && changed) setInputs(next);
     })();
+
     return () => {
       cancelled = true;
     };
