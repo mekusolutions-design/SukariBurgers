@@ -197,7 +197,9 @@ export const posApi = {
       return {
         menus: menusRaw,
         availability: Array.isArray(root.availability)
-          ? (root.availability as MenuAvailability[])
+          ? (root.availability as Record<string, unknown>[])
+              .map(toMenuAvailability)
+              .filter((m) => m.menuItemId)
           : [],
         combos: Array.isArray(root.combos) ? root.combos : [],
         categories: Array.isArray(root.categories) ? root.categories : [],

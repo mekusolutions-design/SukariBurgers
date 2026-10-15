@@ -13,7 +13,7 @@ import { dedupeMenuLines } from "./dedupeMenuLines";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 
-import { menuApi } from "@/features/menu/api";
+import { menuApi, toMenuItem } from "@/features/menu/api";
 import type { MenuComponentLine, MenuItem } from "@/features/menu/types";
 import { formatCurrency } from "@/lib/format/currency";
 import { ApiError } from "@/lib/api/errors";
@@ -112,15 +112,59 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
   const { toast } = useToast();
 
   const menuQuery = useQuery({
-    queryKey: ["pos", "bootstrap", "menus", shopId],
+    queryKey: ["pos", "bootstrap", "menus", shopId, "v2"],
     queryFn: async (): Promise<MenuItem[]> => {
       try {
         const boot = await posApi.getBootstrap(shopId);
-        if (boot.menus?.length) {
-          return boot.menus as MenuItem[];
+        const rawMenus = Array.isArray(boot.menus) ? boot.menus : [];
+        if (rawMenus.length > 0) {
+          // Always normalize Go/Nest bootstrap rows (never trust raw cast)
+          let items = rawMenus
+            .map((row) => toMenuItem(row as Record<string, unknown>))
+            .filter((m) => m.menuId);
+
+          // Overlay availability[] maxPortions when present (Go chips path)
+          const av = Array.isArray(boot.availability) ? boot.availability : [];
+          if (av.length > 0) {
+            const byId = new Map(
+              av.map((a) => [
+                String(
+                  (a as { menuItemId?: string; menu_id?: string }).menuItemId ??
+                    (a as { menuId?: string }).menuId ??
+                    (a as { menu_id?: string }).menu_id ??
+                    "",
+                ),
+                a as {
+                  maxPortions?: number;
+                  availableQuantity?: number;
+                  isAvailable?: boolean;
+                },
+              ]),
+            );
+            items = items.map((m) => {
+              const hit = byId.get(m.menuId);
+              if (!hit) return m;
+              const maxPortions = Math.max(
+                0,
+                Math.floor(
+                  Number(
+                    hit.maxPortions ?? hit.availableQuantity ?? m.maxPortions ?? 0,
+                  ),
+                ),
+              );
+              return {
+                ...m,
+                maxPortions,
+                availableQuantity: maxPortions,
+                isAvailable:
+                  hit.isAvailable !== false && maxPortions > 0,
+              };
+            });
+          }
+          return items;
         }
       } catch {
-        /* fall back to catalog list */
+        /* fall back to Nest catalog list */
       }
       const listed = await menuApi.list(shopId);
       if (Array.isArray(listed)) return listed;
@@ -128,6 +172,8 @@ export function NewOrderPanel({ shopId }: { shopId: string }) {
       return Array.isArray(nested?.items) ? nested.items : [];
     },
     enabled: open,
+    staleTime: 15_000,
+    refetchOnMount: "always",
   });
 
 

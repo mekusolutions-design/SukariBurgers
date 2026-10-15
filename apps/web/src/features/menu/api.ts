@@ -98,7 +98,7 @@ function toLine(raw: Record<string, unknown>, idx: number): MenuComponentLine {
   };
 }
 
-function toMenuItem(raw: Record<string, unknown>): MenuItem {
+export function toMenuItem(raw: Record<string, unknown>): MenuItem {
   const linesRaw = asArray<Record<string, unknown>>(raw.lines);
   let lines = dedupeLines(linesRaw.map((row, idx) => toLine(row, idx)));
 
