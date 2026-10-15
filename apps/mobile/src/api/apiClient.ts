@@ -14,6 +14,16 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     try {
+      // Public auth requests must not inherit the previous user's session.
+      // The server's login and register routes do not require a bearer token.
+      const isPublicAuthRequest = /(?:^|\/)auth\/(?:login|register)(?:[?#]|$)/i.test(
+        config.url ?? '',
+      );
+      if (isPublicAuthRequest) {
+        config.headers.delete('Authorization');
+        return config;
+      }
+
       // 1) Fast path: token already in Zustand (set right after login)
       let token: string | null = null;
       try {

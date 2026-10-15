@@ -180,15 +180,32 @@ export const recipeApi = {
   async update(recipeId: string, input: UpdateRecipeInput): Promise<void> {
     try {
       await apiClient.put(endpoints.recipe.update(recipeId), {
+        item_id: input.itemId,
         item_name: input.itemName,
         standard_yield: input.standardYield,
         unit: input.unit,
         notes: input.notes ?? undefined,
         category: input.category,
         recipe_type: input.recipeType,
-        yield_quantity: input.yieldQuantity,
-        yield_unit: input.yieldUnit,
+        yield_quantity: input.yieldQuantity ?? input.standardYield,
+        yield_unit: input.yieldUnit ?? input.unit,
         yield_basis: input.yieldBasis,
+        ingredients: input.ingredients?.map((ing) => ({
+          raw_item_id: ing.rawItemId,
+          raw_item_name: ing.rawItemName,
+          quantity_per_unit: ing.quantityPerUnit,
+          unit: ing.unit,
+          unit_cost: ing.unitCost ?? undefined,
+        })),
+        outputs: input.outputs?.map((o, index) => ({
+          item_id: o.itemId,
+          item_name: o.itemName,
+          standard_quantity: o.standardQuantity ?? undefined,
+          unit: o.unit,
+          unit_weight: o.unitWeight,
+          weight_unit: o.weightUnit ?? "g",
+          is_default: o.isDefault ?? index === 0,
+        })),
       });
     } catch (error) {
       throw toApiError(error);

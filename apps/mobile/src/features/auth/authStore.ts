@@ -134,6 +134,11 @@ export const useAuthStore = create<AuthState>()(
             err?.message ||
             'Login failed. Check email and password.';
 
+          // A failed attempt must not leave the previous user's token available
+          // as the API client's SecureStore fallback.
+          disconnectAllSockets();
+          setSocketTokenCache(null);
+          await setAuthToken(null);
           set({
             isLoading: false,
             error: Array.isArray(message) ? message.join(', ') : message,
@@ -181,6 +186,9 @@ export const useAuthStore = create<AuthState>()(
             err?.message ||
             'Registration failed';
 
+          disconnectAllSockets();
+          setSocketTokenCache(null);
+          await setAuthToken(null);
           set({
             isLoading: false,
             error: Array.isArray(message) ? message.join(', ') : message,
@@ -195,15 +203,12 @@ export const useAuthStore = create<AuthState>()(
       logout: async () => {
         set({ isLoading: true });
         try {
-          try {
-            await apiClient.post('/auth/logout');
-          } catch {
-            // offline / no endpoint
-          }
-        } finally {
+          // AuthController exposes no logout route; this JWT session is cleared
+          // locally by deleting its token and disconnecting authenticated sockets.
           disconnectAllSockets();
           setSocketTokenCache(null);
           await setAuthToken(null);
+        } finally {
           set({
             user: null,
             token: null,

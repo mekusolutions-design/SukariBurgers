@@ -48,7 +48,7 @@ export function RecipesPage({ shopId }: { shopId: string }) {
         title="Recipes"
         description="Bills of materials for production and food cost."
         actions={
-          <RoleGate allow={["ADMIN", "MANAGER"]}>
+          <RoleGate allow={["ADMIN"]}>
             <Button asChild>
               <Link href={routes.recipeNew(shopId)}>
                 <Plus className="h-4 w-4" /> Create recipe

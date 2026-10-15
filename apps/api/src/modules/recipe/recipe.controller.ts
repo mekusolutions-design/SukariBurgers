@@ -120,7 +120,7 @@ export class RecipeController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @Roles('MANAGER', 'ADMIN')
+  @Roles('ADMIN')
   @ApiOperation({ summary: 'Create recipe with optional multi-output sizes' })
   async createRecipe(
     @Body(new ZodValidationPipe(CreateRecipeSchema)) dto: CreateRecipeDto,
@@ -131,7 +131,7 @@ export class RecipeController {
 
   @Post('ingredient')
   @HttpCode(HttpStatus.CREATED)
-  @Roles('MANAGER', 'ADMIN')
+  @Roles('ADMIN')
   @ApiOperation({ summary: 'Add ingredient to a recipe' })
   async addIngredient(
     @Body(new ZodValidationPipe(RecipeIngredientSchema))
@@ -143,7 +143,7 @@ export class RecipeController {
 
   @Post(':recipeId/outputs')
   @HttpCode(HttpStatus.CREATED)
-  @Roles('MANAGER', 'ADMIN')
+  @Roles('ADMIN')
   @ApiOperation({ summary: 'Add an output size to a recipe' })
   async addOutput(
     @Param('recipeId') recipeId: string,
@@ -158,7 +158,7 @@ export class RecipeController {
 
   @Put(':recipeId')
   @HttpCode(HttpStatus.OK)
-  @Roles('MANAGER', 'ADMIN')
+  @Roles('ADMIN')
   @ApiOperation({ summary: 'Update recipe header' })
   async updateRecipe(
     @Param('recipeId') recipeId: string,

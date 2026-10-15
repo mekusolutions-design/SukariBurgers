@@ -4,6 +4,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -765,6 +766,7 @@ export class RecipeService {
       where: {
         OR: [{ id: recipeId }, { recipe_code: recipeId }],
       },
+      include: { ingredients: true, outputs: true },
     });
 
     if (!existing) {
@@ -773,75 +775,204 @@ export class RecipeService {
 
     const idempotencyKey = `recipe-update-${existing.id}-${Date.now()}`;
 
-    const data: Prisma.RecipeUpdateInput = {
-      ...(dto.item_name != null ? { item_name: dto.item_name } : {}),
-      ...(dto.standard_yield != null
-        ? {
-            standard_yield: dto.standard_yield,
-            yield_quantity: dto.yield_quantity ?? dto.standard_yield,
-          }
-        : {}),
-      ...(dto.yield_quantity != null
-        ? { yield_quantity: dto.yield_quantity }
-        : {}),
-      ...(dto.unit != null
-        ? { unit: dto.unit, yield_unit: dto.yield_unit ?? dto.unit }
-        : {}),
-      ...(dto.yield_unit != null ? { yield_unit: dto.yield_unit } : {}),
-      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-      ...(dto.recipe_type != null ? { recipe_type: dto.recipe_type } : {}),
-      ...(dto.yield_basis != null ? { yield_basis: dto.yield_basis } : {}),
-    };
-
-    if (dto.category !== undefined) {
-      Object.assign(data, {
-        category: dto.category?.trim() || null,
-      });
+    const nextItemId =
+      dto.item_id != null
+        ? normalizeSku(dto.item_id) || dto.item_id.trim()
+        : normalizeSku(existing.item_id) || existing.item_id;
+    if (!nextItemId) {
+      throw new BadRequestException('item_id is required and must be a valid SKU');
     }
 
-    await this.prisma.recipe.update({
-      where: { id: existing.id },
-      data,
-    });
+    const nextName = dto.item_name ?? existing.item_name;
+    const nextYield = dto.standard_yield ?? Number(existing.standard_yield);
+    const nextUnit = dto.unit ?? existing.unit;
+    const nextNotes = dto.notes !== undefined ? dto.notes : existing.notes;
+    const nextCategory =
+      dto.category !== undefined
+        ? dto.category?.trim() || null
+        : existing.category;
+    const nextType = dto.recipe_type ?? existing.recipe_type;
+    const nextYieldQty =
+      dto.yield_quantity ??
+      dto.standard_yield ??
+      Number(existing.yield_quantity ?? existing.standard_yield);
+    const nextYieldUnit =
+      dto.yield_unit ?? dto.unit ?? existing.yield_unit ?? existing.unit;
+    const nextYieldBasis = dto.yield_basis ?? existing.yield_basis;
 
-    // Only sync default output quantity for non–multi-output recipes
-    if (
-      existing.recipe_type !== 'MULTI_OUTPUT' &&
-      (dto.standard_yield != null || dto.unit != null || dto.item_name != null)
-    ) {
-      await this.prisma.recipeOutput.updateMany({
-        where: { recipe_id: existing.id, is_default: true },
+    let ingredientRows: Array<{
+      raw_item_id: string;
+      raw_item_name: string;
+      quantity_per_unit: number;
+      unit: string;
+      unit_cost?: number | null;
+      notes?: string | null;
+    }> | null = null;
+
+    if (dto.ingredients != null) {
+      ingredientRows = dto.ingredients
+        .filter(
+          (ing) =>
+            ing.raw_item_id?.trim() &&
+            ing.raw_item_name?.trim() &&
+            Number(ing.quantity_per_unit) > 0,
+        )
+        .map((ing) => ({
+          raw_item_id: normalizeSku(ing.raw_item_id) || ing.raw_item_id.trim(),
+          raw_item_name: ing.raw_item_name.trim(),
+          quantity_per_unit: Number(ing.quantity_per_unit),
+          unit: ing.unit.trim(),
+          unit_cost:
+            ing.unit_cost != null ? toMoneyNumber(ing.unit_cost) : null,
+          notes: ing.notes ?? null,
+        }));
+      for (const ing of ingredientRows) {
+        await this.ensureItemExists(
+          ing.raw_item_id,
+          ing.raw_item_name,
+          ing.unit,
+          RAW_CATEGORY,
+        );
+      }
+    }
+
+    let outputRows: Array<{
+      item_id: string;
+      item_name: string | null;
+      standard_quantity: number | null;
+      unit: string;
+      unit_weight: number | null;
+      weight_unit: string | null;
+      is_default: boolean;
+    }> | null = null;
+
+    if (dto.outputs != null) {
+      outputRows = dto.outputs.map((o, index) => {
+        const outputSku = normalizeSku(o.item_id) || o.item_id.trim();
+        return {
+          item_id: outputSku,
+          item_name: o.item_name?.trim() || nextName,
+          standard_quantity:
+            o.standard_quantity != null ? Number(o.standard_quantity) : null,
+          unit: o.unit?.trim() || 'pcs',
+          unit_weight: o.unit_weight != null ? Number(o.unit_weight) : null,
+          weight_unit: o.weight_unit ?? (o.unit_weight != null ? 'g' : null),
+          is_default: o.is_default ?? index === 0,
+        };
+      });
+      for (const o of outputRows) {
+        await this.ensureItemExists(
+          o.item_id,
+          o.item_name || nextName,
+          o.unit,
+          FINISHED_CATEGORY,
+        );
+      }
+    }
+
+    await this.ensureItemExists(nextItemId, nextName, nextUnit, FINISHED_CATEGORY);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.recipe.update({
+        where: { id: existing.id },
         data: {
-          ...(dto.standard_yield != null
-            ? { standard_quantity: dto.standard_yield }
-            : {}),
-          ...(dto.unit != null ? { unit: dto.unit } : {}),
-          ...(dto.item_name != null ? { item_name: dto.item_name } : {}),
+          item_id: nextItemId,
+          item_name: nextName,
+          standard_yield: nextYield,
+          unit: nextUnit,
+          notes: nextNotes,
+          category: nextCategory,
+          recipe_type: nextType,
+          yield_quantity: nextYieldQty,
+          yield_unit: nextYieldUnit,
+          yield_basis: nextYieldBasis,
         },
       });
-    }
 
-    const primarySku = normalizeSku(existing.item_id) || existing.item_id;
-    await this.ensureItemExists(
-      primarySku,
-      dto.item_name ?? existing.item_name,
-      dto.unit ?? existing.unit,
-      FINISHED_CATEGORY,
-    );
+      if (ingredientRows != null) {
+        await tx.recipeIngredient.deleteMany({ where: { recipe_id: existing.id } });
+        if (ingredientRows.length > 0) {
+          await tx.recipeIngredient.createMany({
+            data: ingredientRows.map((ing) => ({
+              recipe_id: existing.id,
+              raw_item_id: ing.raw_item_id,
+              raw_item_name: ing.raw_item_name,
+              quantity_per_unit: ing.quantity_per_unit,
+              unit: ing.unit,
+              unit_cost: ing.unit_cost,
+              notes: ing.notes,
+            })),
+          });
+        }
+      }
+
+      if (outputRows != null) {
+        await tx.recipeOutput.deleteMany({ where: { recipe_id: existing.id } });
+        if (outputRows.length > 0) {
+          await tx.recipeOutput.createMany({
+            data: outputRows.map((o) => ({
+              recipe_id: existing.id,
+              item_id: o.item_id,
+              item_name: o.item_name,
+              standard_quantity: o.standard_quantity,
+              unit: o.unit,
+              unit_weight: o.unit_weight,
+              weight_unit: o.weight_unit,
+              is_default: o.is_default,
+              is_active: true,
+            })),
+          });
+        }
+      } else if (
+        nextType !== 'MULTI_OUTPUT' &&
+        (dto.standard_yield != null ||
+          dto.unit != null ||
+          dto.item_name != null ||
+          dto.item_id != null)
+      ) {
+        await tx.recipeOutput.updateMany({
+          where: { recipe_id: existing.id, is_default: true },
+          data: {
+            ...(dto.standard_yield != null
+              ? { standard_quantity: dto.standard_yield }
+              : {}),
+            ...(dto.unit != null ? { unit: dto.unit } : {}),
+            ...(dto.item_name != null ? { item_name: dto.item_name } : {}),
+            ...(dto.item_id != null ? { item_id: nextItemId } : {}),
+          },
+        });
+      }
+    });
 
     const event = await this.eventStore.appendEvent({
       event_type: 'recipe_updated',
       actor_user_id: actorUserId,
       idempotency_key: idempotencyKey,
-      item_id: primarySku,
+      item_id: nextItemId,
       payload: {
         recipe_id: existing.id,
-        ...dto,
+        recipe_code: existing.recipe_code,
+        item_id: nextItemId,
+        previous_item_id: existing.item_id,
+        item_name: nextName,
+        standard_yield: nextYield,
+        unit: nextUnit,
+        notes: nextNotes,
+        category: nextCategory,
+        recipe_type: nextType,
+        yield_quantity: nextYieldQty,
+        yield_unit: nextYieldUnit,
+        yield_basis: nextYieldBasis,
+        ingredients: ingredientRows,
+        outputs: outputRows,
+        ...(dto.payload ?? {}),
         updated_at: new Date().toISOString(),
       },
     });
 
-    this.logger.log(`Recipe updated: ${existing.id}`);
+    this.logger.log(
+      `Recipe updated: ${nextName} (id=${existing.id}, sku=${nextItemId}, type=${nextType})`,
+    );
 
     return {
       success: true,
@@ -850,6 +981,7 @@ export class RecipeService {
       message: 'Recipe updated successfully',
     };
   }
+
 
   async getRecipeIngredients(recipeId: string) {
     const db = await this.prisma.recipe.findFirst({

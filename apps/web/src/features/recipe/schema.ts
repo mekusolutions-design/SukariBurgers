@@ -78,29 +78,44 @@ export type CreateRecipeInput = z.infer<typeof createRecipeSchema>;
 export type RecipeIngredientInput = z.infer<typeof recipeIngredientSchema>;
 export type RecipeOutputInput = z.infer<typeof recipeOutputSchema>;
 
-export const updateRecipeSchema = z.object({
-  itemName: z.string().min(1, "Finished item name is required").optional(),
-  standardYield: z.coerce
-    .number()
-    .positive("Yield must be a positive number")
-    .optional(),
-  unit: z.string().min(1, "Unit is required").optional(),
-  notes: z.string().optional().nullable(),
-  category: z.string().min(1).nullable().optional(),
-  recipeType: z
-    .enum([
-      "SINGLE_OUTPUT",
-      "PORTION_OUTPUT",
-      "MULTI_OUTPUT",
-      "ASSEMBLY",
-      "CONVERSION",
-      "CO_PRODUCT",
-      "SUB_RECIPE",
-    ])
-    .optional(),
-  yieldQuantity: z.coerce.number().positive().optional(),
-  yieldUnit: z.string().optional(),
-  yieldBasis: z.enum(["BATCH", "UNIT"]).optional(),
-});
+export const updateRecipeSchema = z
+  .object({
+    itemId: z.string().min(1, "Finished item ID is required").optional(),
+    itemName: z.string().min(1, "Finished item name is required").optional(),
+    standardYield: z.coerce
+      .number()
+      .positive("Yield must be a positive number")
+      .optional(),
+    unit: z.string().min(1, "Unit is required").optional(),
+    notes: z.string().optional().nullable(),
+    category: z.string().min(1).nullable().optional(),
+    recipeType: z
+      .enum([
+        "SINGLE_OUTPUT",
+        "PORTION_OUTPUT",
+        "MULTI_OUTPUT",
+        "ASSEMBLY",
+        "CONVERSION",
+        "CO_PRODUCT",
+        "SUB_RECIPE",
+      ])
+      .optional(),
+    yieldQuantity: z.coerce.number().positive().optional(),
+    yieldUnit: z.string().optional(),
+    yieldBasis: z.enum(["BATCH", "UNIT"]).optional(),
+    ingredients: z.array(recipeIngredientSchema).optional(),
+    outputs: z.array(recipeOutputSchema).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.recipeType === "MULTI_OUTPUT") {
+      if (data.outputs != null && data.outputs.length < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Multi-output needs at least two sizes with weights",
+          path: ["outputs"],
+        });
+      }
+    }
+  });
 
 export type UpdateRecipeInput = z.infer<typeof updateRecipeSchema>;
