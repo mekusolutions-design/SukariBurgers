@@ -13,6 +13,11 @@ const REQUIRED_SCREENS = [
   'Register',
   'Payment',
   'PaymentSuccess',
+  'ModuleHub',
+  'Consumption',
+  'Variance',
+  'Trace',
+  'Team',
   'StockOverview',
   'KitchenDisplay',
   'Receive',
@@ -46,6 +51,13 @@ describe('navigation coverage', () => {
       assert.ok(typeof screen === 'string');
     });
   }
+
+  it('RootNavigator registers the operational analytics and team screens', () => {
+    assert.match(rootNav, /name="Consumption"/);
+    assert.match(rootNav, /name="Variance"/);
+    assert.match(rootNav, /name="Trace"/);
+    assert.match(rootNav, /name="Team"/);
+  });
 
   it('RootNavigator registers PrePrep, Approvals, ManagerDashboard', () => {
     assert.match(rootNav, /name="PrePrep"/);

@@ -2,8 +2,8 @@
 import type { TextStyle } from 'react-native';
 
 export const colors = {
-  primary: '#0066CC',
-  primaryDark: '#004C99',
+  primary: '#F28C28',
+  primaryDark: '#C96A0B',
 
   success: '#28A745',
   warning: '#FF9500',

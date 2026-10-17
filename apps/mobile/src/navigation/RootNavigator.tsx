@@ -1,5 +1,8 @@
 // apps/mobile/src/navigation/RootNavigator.tsx
 import React from 'react';
+import { TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { RootNavigationProp } from './types';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, Text, View } from 'react-native';
 
@@ -34,8 +37,27 @@ import ManagerDashboardScreen from '../screens/dashboard/ManagerDashboardScreen'
 import NotificationSettings from '../screens/notifications/NotificationSettings';
 import ProfileScreen from '../screens/profile/ProfileScreen';
 import LogoutButton from '../components/common/LogoutButton';
+import ModuleHubScreen from '../screens/navigation/ModuleHubScreen';
+import ConsumptionScreen from '../screens/analytics/ConsumptionScreen';
+import VarianceScreen from '../screens/analytics/VarianceScreen';
+import TraceScreen from '../screens/trace/TraceScreen';
+import TeamScreen from '../screens/team/TeamScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+function HeaderActions() {
+  const navigation = useNavigation<RootNavigationProp>();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  if (!isAuthenticated) return null;
+  return (
+    <React.Fragment>
+      <TouchableOpacity onPress={() => navigation.navigate('ModuleHub')} style={{ paddingHorizontal: 8, paddingVertical: 8 }}>
+        <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>Modules</Text>
+      </TouchableOpacity>
+      <LogoutButton />
+    </React.Fragment>
+  );
+}
 
 export default function RootNavigator() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -67,7 +89,7 @@ export default function RootNavigator() {
         headerStyle: { backgroundColor: colors.primary },
         headerTintColor: '#fff',
         headerTitleStyle: { fontWeight: 'bold' },
-        headerRight: () => (isAuthenticated ? <LogoutButton /> : null),
+        headerRight: () => (isAuthenticated ? <HeaderActions /> : null),
         // animation can reduce some web transition quirks; optional
         animation: 'default',
       }}
@@ -92,6 +114,12 @@ export default function RootNavigator() {
         component={PaymentSuccessScreen}
         options={{ title: 'Payment Successful' }}
       />
+
+      <Stack.Screen name="ModuleHub" component={ModuleHubScreen} options={{ title: 'All Modules' }} />
+      <Stack.Screen name="Consumption" component={ConsumptionScreen} options={{ title: 'Consumption & Alerts' }} />
+      <Stack.Screen name="Variance" component={VarianceScreen} options={{ title: 'Variance Review' }} />
+      <Stack.Screen name="Trace" component={TraceScreen} options={{ title: 'Traceability' }} />
+      <Stack.Screen name="Team" component={TeamScreen} options={{ title: 'Team Management' }} />
 
       <Stack.Screen
         name="StockOverview"

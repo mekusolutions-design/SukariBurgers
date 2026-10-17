@@ -16,6 +16,11 @@ export type RootStackParamList = {
     order_id: string;
   };
 
+  ModuleHub: undefined;
+  Consumption: undefined;
+  Variance: undefined;
+  Trace: undefined;
+  Team: undefined;
   StockOverview: undefined;
   KitchenDisplay: undefined;
   Receive: { scannedItemId?: string } | undefined;

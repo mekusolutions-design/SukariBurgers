@@ -10,7 +10,7 @@ import {
   ListRenderItem,
   Platform,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { useRole } from '../../hooks/useRole';
@@ -53,9 +53,18 @@ export default function ProductionHistoryScreen() {
     retryFailedSync,
     getPendingCount,
     fetchHistory,
+    historyLoading,
+    historyError,
   } = useProductionStore();
 
   const [refreshing, setRefreshing] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      void fetchHistory();
+      return undefined;
+    }, [fetchHistory]),
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -91,6 +100,8 @@ export default function ProductionHistoryScreen() {
         : 'In Progress';
 
     const qty = item.actual_quantity_produced ?? item.planned_quantity ?? 0;
+    const timestamp = item.finishedAt || item.queuedAt;
+    const validTimestamp = timestamp && !Number.isNaN(Date.parse(timestamp));
 
     return (
       <View style={styles.card}>
@@ -122,12 +133,12 @@ export default function ProductionHistoryScreen() {
         </View>
 
         <Text style={styles.date}>
-          {new Date(item.queuedAt).toLocaleDateString()} •{' '}
-          {new Date(item.queuedAt).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
+          {validTimestamp
+            ? `${new Date(timestamp).toLocaleDateString()} • ${new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+            : 'Date unavailable'}
         </Text>
+        {item.expiry_date ? <Text style={styles.detailText}>Expiry: <Text style={styles.bold}>{item.expiry_date}</Text></Text> : null}
+        {item.available_stock != null ? <Text style={styles.detailText}>Available stock: <Text style={styles.bold}>{item.available_stock}</Text></Text> : null}
       </View>
     );
   };
@@ -135,6 +146,8 @@ export default function ProductionHistoryScreen() {
   return (
     <View style={styles.container}>
       <Text style={typography.title}>Production History</Text>
+      {historyError ? <Text style={{ color: colors.danger, marginVertical: spacing.sm }}>{historyError}</Text> : null}
+      {historyLoading && history.length === 0 ? <Text style={styles.emptySubText}>Loading server production history…</Text> : null}
 
       {syncStatus !== 'idle' && (
         <View
