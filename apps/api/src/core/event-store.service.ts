@@ -63,6 +63,9 @@ export class EventStoreService {
     supplier_id?: string;
     approved_by_id?: string;
     payload: Record<string, unknown>;
+    /** Internal atomic stock-batch write-off; not a public API field. */
+    batch_writeoff?: { batchId: string; shopId: string; itemId: string; expectedQty: number };
+    batch_waste?: { batchId?: string; shopId: string; itemId: string; quantity: number; unitCost: number; userId?: string };
   }) {
     // Fast path: identical replay outside the write lock
     const existing = await this.prisma.event.findUnique({
@@ -129,6 +132,10 @@ export class EventStoreService {
     try {
       // Atomic: ensure master Item + insert Event (idempotency unique enforces races)
       event = await this.prisma.$transaction(async (tx: TxClient) => {
+        let transactionalTotalCostMoney = totalCostMoney;
+        let transactionalUnitCostMoney = unitCostMoney;
+        let transactionalBatchNumber = data.batch_number;
+        let transactionalPayload: Record<string, unknown> = { ...payload };
         const again = await tx.event.findUnique({
           where: { idempotency_key: data.idempotency_key },
         });
@@ -145,23 +152,111 @@ export class EventStoreService {
           await this.ensureItemExistsTx(tx, businessItemId, payload);
         }
 
+        // Keep the physical batch deduction and durable waste event in one
+        // transaction. If either fails, neither the event nor the stock change commits.
+        if (data.batch_writeoff) {
+          const batchUpdate = await tx.inventoryBatch.updateMany({
+            where: {
+              id: data.batch_writeoff.batchId,
+              shop_id: data.batch_writeoff.shopId,
+              item_id: data.batch_writeoff.itemId,
+              qty_remaining: data.batch_writeoff.expectedQty,
+            },
+            data: { qty_remaining: 0 },
+          });
+          if (batchUpdate.count !== 1) {
+            throw new ConflictException(
+              'Expired batch quantity changed; refresh the preview and try again',
+            );
+          }
+          await tx.inventoryMovement.create({
+            data: {
+              shop_id: data.batch_writeoff.shopId,
+              batch_id: data.batch_writeoff.batchId,
+              item_id: data.batch_writeoff.itemId,
+              movement_type: 'EXPIRY_WRITEOFF',
+              quantity: -data.batch_writeoff.expectedQty,
+              unit_cost: new Prisma.Decimal(unitCost ?? 0),
+              reference_type: 'waste_recorded',
+              reference_id: data.idempotency_key,
+              user_id: actorUserId,
+              idempotency_key: `expiry-writeoff:${data.batch_writeoff.batchId}`,
+            },
+          });
+        }
+
+        if (data.batch_waste) {
+          const allocationRows = data.batch_waste.batchId
+            ? await tx.$queryRaw<Array<{ id: string; batch_number: string; qty_remaining: number; unit_cost: Prisma.Decimal }>>`SELECT id, batch_number, qty_remaining, unit_cost FROM "InventoryBatch" WHERE id = ${data.batch_waste.batchId} AND shop_id = ${data.batch_waste.shopId} AND item_id = ${data.batch_waste.itemId} AND qty_remaining > 0 FOR UPDATE`
+            : await tx.$queryRaw<Array<{ id: string; batch_number: string; qty_remaining: number; unit_cost: Prisma.Decimal }>>`SELECT id, batch_number, qty_remaining, unit_cost FROM "InventoryBatch" WHERE shop_id = ${data.batch_waste.shopId} AND item_id = ${data.batch_waste.itemId} AND qty_remaining > 0 ORDER BY expiry_date ASC NULLS LAST, received_at ASC, id ASC FOR UPDATE`;
+          const available = allocationRows.reduce((sum, row) => sum + Number(row.qty_remaining), 0);
+          if (available + 1e-9 < data.batch_waste.quantity) {
+            throw new ConflictException('Selected/available batch stock is insufficient; refresh inventory and try again');
+          }
+          let remaining = data.batch_waste.quantity;
+          let sliceIndex = 0;
+          let batchWasteValue = 0;
+          const batchAllocations: Array<{ batch_id: string; batch_number: string; quantity: number; unit_cost: number; value: number }> = [];
+          for (const batch of allocationRows) {
+            if (remaining <= 1e-9) break;
+            const take = Math.min(Number(batch.qty_remaining), remaining);
+            if (take <= 0) continue;
+            const changed = await tx.inventoryBatch.updateMany({
+              where: { id: batch.id, shop_id: data.batch_waste.shopId, item_id: data.batch_waste.itemId, qty_remaining: { gte: take } },
+              data: { qty_remaining: { decrement: take } },
+            });
+            if (changed.count !== 1) throw new ConflictException('Batch quantity changed; refresh inventory and try again');
+            const batchUnitCost = Number(batch.unit_cost ?? 0);
+            batchWasteValue += take * batchUnitCost;
+            batchAllocations.push({ batch_id: batch.id, batch_number: batch.batch_number, quantity: take, unit_cost: batchUnitCost, value: take * batchUnitCost });
+            await tx.inventoryMovement.create({
+              data: {
+                shop_id: data.batch_waste.shopId,
+                batch_id: batch.id,
+                item_id: data.batch_waste.itemId,
+                movement_type: 'WASTE',
+                quantity: -take,
+                unit_cost: batch.unit_cost,
+                reference_type: 'waste_recorded',
+                reference_id: data.idempotency_key,
+                user_id: data.batch_waste.userId ?? actorUserId,
+                idempotency_key: `manual-waste:${data.idempotency_key}:${batch.id}:${sliceIndex++}`,
+              },
+            });
+            remaining = Math.max(0, remaining - take);
+          }
+          // Batch-specific waste value is the sum of the actual locked slices,
+          // not the item WAC. Keep the waste event and its projection payload aligned.
+          transactionalTotalCostMoney = toMoneyNumber(batchWasteValue);
+          transactionalUnitCostMoney = data.batch_waste.quantity > 0 ? toMoneyNumber(batchWasteValue / data.batch_waste.quantity) : 0;
+          if (batchAllocations.length === 1) transactionalBatchNumber = batchAllocations[0].batch_number;
+          transactionalPayload = {
+            ...payload,
+            batch_id: batchAllocations.length === 1 ? batchAllocations[0].batch_id : undefined,
+            batch_number: batchAllocations.length === 1 ? batchAllocations[0].batch_number : undefined,
+            batch_allocations: batchAllocations,
+            total_waste_value: batchWasteValue,
+            unit_cost: data.batch_waste.quantity > 0 ? batchWasteValue / data.batch_waste.quantity : 0,
+          };
+        }
+
         const created = await tx.event.create({
           data: {
             event_type: data.event_type,
             shop_id: shopId,
             actor_user_id: actorUserId,
             idempotency_key: data.idempotency_key,
-            batch_number: data.batch_number,
+            batch_number: transactionalBatchNumber,
             expiry_date: data.expiry_date,
             waste_reason: data.waste_reason,
             waste_photo_url: data.waste_photo_url,
             item_id: businessItemId,
             quantity,
-            unit_cost: unitCostMoney,
-            total_cost: totalCostMoney,
+            unit_cost: transactionalUnitCostMoney,
+            total_cost: transactionalTotalCostMoney,
             supplier_id: supplierId,
             approved_by_id: approvedById,
-            payload: payload as Prisma.InputJsonValue,
+            payload: transactionalPayload as Prisma.InputJsonValue,
           },
         });
 

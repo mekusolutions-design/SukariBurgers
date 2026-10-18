@@ -95,15 +95,23 @@ export class WasteService {
       typeof dto.payload === 'object' &&
       (dto.payload as { production_id?: string }).production_id) ||
       '';
-    const idempotencyKey =
-      dto.module_source === 'production' && batchKey
+    const payloadInput = asRecord(dto.payload);
+    const expiryBatchId = asString(payloadInput.expiry_writeoff_batch_id);
+    const idempotencyKey = expiryBatchId
+      ? `expiry-writeoff-${shopId}-${expiryBatchId}`
+      : dto.module_source === 'production' && batchKey
         ? `waste-production-${dto.item_id}-${batchKey}`
         : `waste-${dto.module_source}-${dto.item_id}-${dto.quantity_wasted}-${(dto.waste_reason || 'none').slice(0, 40)}`;
 
-    const result = (await this.idempotencyService.enforce(
-      idempotencyKey,
-      dto,
-    )) as IdempotencyResult;
+    // The expiry-writeoff event stores an enriched payload (actor, resolved unit,
+    // value and timestamp), so compare-by-whole-DTO would incorrectly reject a
+    // legitimate retry. This key is derived from a server-selected batch ID.
+    const existingExpiryEvent = expiryBatchId
+      ? await this.idempotencyService.check(idempotencyKey)
+      : null;
+    const result = (existingExpiryEvent
+      ? { isReplay: true, existing: existingExpiryEvent }
+      : await this.idempotencyService.enforce(idempotencyKey, dto)) as IdempotencyResult;
 
     if (result.isReplay && result.existing) {
       const existingPayload = asRecord(result.existing.payload);
@@ -135,8 +143,24 @@ export class WasteService {
       unitCost,
     );
 
-    // Spec: live WAC wins over client-supplied cost when WAC is available
-    if (resolved.unitCost > 0) {
+    if (dto.batch_id && !expiryBatchId) {
+      const selectedBatch = await this.prisma.inventoryBatch.findFirst({
+        where: { id: dto.batch_id, shop_id: shopId, item_id: dto.item_id, qty_remaining: { gt: 0 } },
+        select: { unit_cost: true },
+      });
+      if (!selectedBatch) throw new NotFoundException('Selected stock batch was not found in this shop or has no remaining stock');
+      unitCost = Number(selectedBatch.unit_cost ?? 0);
+      totalValue = unitCost * qty;
+    }
+
+    // Expiry write-offs explicitly carry the source batch's cost. Preserve WAC
+    // costing for all existing non-batch-specific waste flows.
+    if (expiryBatchId) {
+      unitCost = unitCost ?? resolved.unitCost;
+      totalValue = totalValue ?? (unitCost ?? 0) * qty;
+    } else if (dto.batch_id) {
+      totalValue = (unitCost ?? 0) * qty;
+    } else if (resolved.unitCost > 0) {
       unitCost = resolved.unitCost;
       if (totalValue == null || totalValue <= 0) {
         totalValue = resolved.totalValue;
@@ -187,9 +211,31 @@ export class WasteService {
       quantity: qtyStored,
       unit_cost: unitCost ?? 0,
       total_cost: totalValue ?? 0,
+      ...(expiryBatchId
+        ? {
+            batch_writeoff: {
+              batchId: expiryBatchId,
+              shopId,
+              itemId: dto.item_id,
+              expectedQty: qtyStored,
+            },
+          }
+        : dto.module_source === 'inventory'
+          ? {
+              batch_waste: {
+                ...(dto.batch_id ? { batchId: dto.batch_id } : {}),
+                shopId,
+                itemId: dto.item_id,
+                quantity: qtyStored,
+                unitCost: unitCost ?? 0,
+                userId: actorUserId,
+              },
+            }
+          : {}),
       payload: {
         waste_id: wasteId,
         ...dto,
+        batch_id: dto.batch_id ?? (expiryBatchId || undefined),
         item_name: itemName,
         shop_id: shopId,
         unit_of_measure: unitOfMeasure,
@@ -199,6 +245,8 @@ export class WasteService {
         recorded_at: recordedAt,
       },
     });
+    const persistedWasteValue = Number(event.total_cost ?? totalValue ?? 0);
+    const persistedUnitCost = Number(event.unit_cost ?? unitCost ?? 0);
 
     try {
       this.wasteGateway.broadcastWasteRecorded({
@@ -206,8 +254,8 @@ export class WasteService {
         ...dto,
         item_name: itemName,
         unit_of_measure: unitOfMeasure,
-        unit_cost: unitCost ?? 0,
-        total_waste_value: totalValue ?? 0,
+        unit_cost: persistedUnitCost,
+        total_waste_value: persistedWasteValue,
         recorded_at: recordedAt,
       });
     } catch {
@@ -224,8 +272,8 @@ export class WasteService {
       success: true,
       wasteId,
       eventId: event.id,
-      unitCost: unitCost ?? 0,
-      totalWasteValue: totalValue ?? 0,
+      unitCost: persistedUnitCost,
+      totalWasteValue: persistedWasteValue,
       itemName,
       message: 'Waste recorded successfully',
     };
@@ -236,40 +284,61 @@ export class WasteService {
    * Do NOT use expired_stock alone (avoids false positives like ZESTA/Buns).
    */
   async listExpiredCandidates(shopId: string = '1') {
-    const rows = await this.prisma.inventoryProjection.findMany({
-      where: { shop_id: shopId },
-      include: {
-        item: { select: { name: true, unit: true } },
+    const cutoff = this.shopLocalDayStart(new Date());
+    const batches = await this.prisma.inventoryBatch.findMany({
+      where: {
+        shop_id: shopId,
+        qty_remaining: { gt: 0 },
+        expiry_date: { not: null, lt: cutoff },
       },
-      take: 500,
+      include: { item: { select: { name: true, unit: true } } },
+      orderBy: [
+        { expiry_date: 'asc' },
+        { received_at: 'asc' },
+        { id: 'asc' },
+      ],
+      take: 2000,
     });
 
-    const items = rows
-      .map((r) => {
-        const days = daysToExpiry(r.next_expiry_date);
-        const available = Number(r.available_stock ?? 0);
-        const expiredQty = Number(r.expired_stock ?? 0);
-        const isPastExpiry = days != null && days < 0;
-        return {
-          item_id: r.item_id,
-          item_name: r.item?.name ?? r.item_id,
-          unit: r.item?.unit ?? 'pcs',
-          available_stock: available,
-          expired_stock: expiredQty,
-          days_to_expiry_min: days,
-          next_expiry_date: r.next_expiry_date,
-          total_value: Number(r.total_value ?? 0),
-          write_off_qty: available > 0 && isPastExpiry ? available : 0,
-          isExpired: isPastExpiry,
-        };
-      })
-      .filter((r) => r.isExpired && r.write_off_qty > 0);
+    const items = batches.map((batch) => {
+      const qty = Math.max(0, Number(batch.qty_remaining));
+      const unitCost = Number(batch.unit_cost ?? 0);
+      const expiry = batch.expiry_date;
+      const days = expiry ? Math.floor((cutoff.getTime() - this.shopLocalDayStart(expiry).getTime()) / 86400000) : null;
+      return {
+        item_id: batch.item_id,
+        item_name: batch.item?.name ?? batch.item_id,
+        unit: batch.item?.unit ?? 'pcs',
+        batch_id: batch.id,
+        batch_number: batch.batch_number,
+        received_at: batch.received_at,
+        expiry_date: expiry,
+        available_stock: qty,
+        expired_stock: qty,
+        write_off_qty: qty,
+        unit_cost: unitCost,
+        batch_value: qty * unitCost,
+        days_to_expiry_min: days == null ? null : -Math.max(1, days),
+        isExpired: true,
+      };
+    });
 
     return {
       success: true,
       items,
       count: items.length,
+      total_quantity: items.reduce((sum, row) => sum + row.write_off_qty, 0),
+      total_value: items.reduce((sum, row) => sum + row.batch_value, 0),
     };
+  }
+
+  private shopLocalDayStart(now: Date): Date {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(now);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value;
+    return new Date(Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day'))) - 3 * 60 * 60 * 1000);
   }
 
   /**
@@ -283,47 +352,107 @@ export class WasteService {
   }) {
     const shopId = opts.shopId || '1';
     const candidates = await this.listExpiredCandidates(shopId);
-    let targets = candidates.items;
+    const targets = opts.itemId
+      ? candidates.items.filter((row) => row.item_id === opts.itemId)
+      : candidates.items;
 
-    if (opts.itemId) {
-      targets = targets.filter((t) => t.item_id === opts.itemId);
-      if (targets.length === 0) {
-        throw new NotFoundException(
-          `No expired stock to write off for item ${opts.itemId}`,
-        );
-      }
+    if (opts.itemId && targets.length === 0) {
+      throw new NotFoundException(`No expired stock to write off for item ${opts.itemId}`);
     }
 
     const results: Array<{
       itemId: string;
       itemName: string;
+      batchId: string;
+      batchNumber: string;
       quantity: number;
+      value: number;
       eventId: string;
       wasteId: unknown;
     }> = [];
 
     for (const row of targets) {
-      const recorded = await this.recordWaste(
-        {
-          module_source: 'inventory',
-          item_id: row.item_id,
-          item_name: row.item_name,
+      // Re-read the batch immediately before recording the event. The conditional
+      // update below prevents a concurrent confirmation from draining it twice.
+      const current = await this.prisma.inventoryBatch.findFirst({
+        where: {
+          id: row.batch_id,
           shop_id: shopId,
-          quantity_wasted: row.write_off_qty,
-          unit_of_measure: row.unit,
-          waste_type: 'spoilage',
-          waste_reason: 'expired product write-off',
-          root_cause: 'inherent',
-          severity: 'high',
-          notes: `Auto write-off for expired stock (${row.days_to_expiry_min ?? 'n/a'} days to expiry)`,
+          item_id: row.item_id,
+          qty_remaining: { gt: 0 },
+          expiry_date: { not: null, lt: this.shopLocalDayStart(new Date()) },
         },
-        opts.actorUserId,
-      );
+      });
+      if (!current) continue;
+
+      const quantity = Number(current.qty_remaining);
+      const unitCost = Number(current.unit_cost ?? 0);
+      const value = quantity * unitCost;
+      const stablePayload = {
+        expiry_writeoff_batch_id: current.id,
+        batch_id: current.id,
+        batch_number: current.batch_number,
+        expiry_date: current.expiry_date?.toISOString() ?? null,
+        shop_id: shopId,
+        item_id: current.item_id,
+        quantity_wasted: quantity,
+        unit_cost: unitCost,
+        total_waste_value: value,
+      };
+
+      const recorded = await this.recordWaste({
+        module_source: 'inventory',
+        item_id: row.item_id,
+        item_name: row.item_name,
+        shop_id: shopId,
+        batch_number: current.batch_number,
+        quantity_wasted: quantity,
+        unit_of_measure: row.unit,
+        unit_cost: unitCost,
+        total_waste_value: value,
+        waste_type: 'spoilage',
+        waste_reason: 'Expired stock write-off',
+        root_cause: 'inherent',
+        severity: 'high',
+        notes: `Expired batch write-off: ${current.batch_number}`,
+        payload: stablePayload,
+      }, opts.actorUserId);
+
+      // The physical batch deduction and durable event are committed atomically
+      // by EventStoreService; the projection engine owns aggregate stock/value.
+      const nextBatch = await this.prisma.inventoryBatch.findFirst({
+        where: {
+          shop_id: shopId,
+          item_id: row.item_id,
+          qty_remaining: { gt: 0 },
+          expiry_date: { not: null, gte: this.shopLocalDayStart(new Date()) },
+        },
+        orderBy: [
+          { expiry_date: 'asc' },
+          { received_at: 'asc' },
+          { id: 'asc' },
+        ],
+        select: { expiry_date: true },
+      });
+      const nextExpiry = nextBatch?.expiry_date ?? null;
+      const daysToNext = nextExpiry
+        ? Math.ceil((nextExpiry.getTime() - this.shopLocalDayStart(new Date()).getTime()) / 86400000)
+        : null;
+      await this.prisma.inventoryProjection.updateMany({
+        where: { shop_id: shopId, item_id: row.item_id },
+        data: {
+          next_expiry_date: nextExpiry,
+          days_to_expiry_min: daysToNext,
+        },
+      });
 
       results.push({
         itemId: row.item_id,
         itemName: row.item_name,
-        quantity: row.write_off_qty,
+        batchId: current.id,
+        batchNumber: current.batch_number,
+        quantity,
+        value,
         eventId: recorded.eventId,
         wasteId: recorded.wasteId,
       });
@@ -333,10 +462,11 @@ export class WasteService {
       success: true,
       writtenOff: results,
       count: results.length,
-      message:
-        results.length === 0
-          ? 'No expired stock with available quantity to write off'
-          : `Wrote off ${results.length} expired item(s)`,
+      total_quantity: results.reduce((sum, row) => sum + row.quantity, 0),
+      total_value: results.reduce((sum, row) => sum + row.value, 0),
+      message: results.length === 0
+        ? 'No expired batches with remaining quantity to write off'
+        : `Wrote off ${results.length} expired batch(es)`,
     };
   }
 

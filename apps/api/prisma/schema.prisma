@@ -90,6 +90,7 @@ model Item {
   finishedGoodCategory FinishedGoodCategory? @relation(fields: [finished_good_category_id], references: [id])
 
   inventoryBatches InventoryBatch[]
+  stockMovements   InventoryMovement[]
   @@index([finished_good_category_id])
   @@index([category])
 }
@@ -264,6 +265,51 @@ model InventoryBatch {
   @@index([shop_id, item_id, expiry_date])
   @@index([shop_id, item_id, qty_remaining])
   @@index([batch_number])
+  movements InventoryMovement[]
+}
+
+/// Append-only physical stock movement ledger. Corrections are new rows, not edits.
+model InventoryMovement {
+  id               String   @id @default(uuid())
+  shop_id          String   @default("1")
+  batch_id         String
+  item_id          String
+  movement_type    String
+  /// Signed quantity in the item's base unit: receipts positive, outflows negative.
+  quantity         Float
+  unit_cost        Decimal  @default(0) @db.Decimal(18, 6)
+  reference_type   String?
+  reference_id     String?
+  user_id          String?
+  idempotency_key  String?  @unique
+  created_at       DateTime @default(now())
+
+  item  Item           @relation(fields: [item_id], references: [item_id])
+  batch InventoryBatch @relation(fields: [batch_id], references: [id])
+
+  @@index([shop_id, item_id, created_at])
+  @@index([shop_id, batch_id, created_at])
+  @@index([reference_type, reference_id])
+}
+
+/// Raw-batch inputs consumed by a production event; supports multi-batch trace.
+model ProductionInput {
+  id               String   @id @default(uuid())
+  shop_id          String   @default("1")
+  production_id    String
+  production_event_id String?
+  input_batch_id   String
+  input_item_id    String
+  output_item_id   String?
+  output_batch_id  String?
+  qty_used         Float
+  unit_cost        Decimal  @default(0) @db.Decimal(18, 6)
+  created_at       DateTime @default(now())
+
+  @@unique([production_id, input_batch_id, input_item_id])
+  @@index([shop_id, production_id])
+  @@index([shop_id, input_batch_id])
+  @@index([production_event_id])
 }
 
 model VarianceBatch {

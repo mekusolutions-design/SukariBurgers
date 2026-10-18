@@ -2,6 +2,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { Plus, PackageMinus } from "lucide-react";
@@ -27,6 +28,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 
 import { useWasteDashboard } from "../hooks/use-waste-dashboard";
 import { wasteApi } from "../api";
+import { inventoryApi } from "@/features/inventory/api";
 import { recordWasteSchema, type RecordWasteInput } from "../schema";
 import { WASTE_CAUSE_LABELS } from "../constants";
 import { WasteSummaryCards } from "./WasteSummaryCards";
@@ -43,9 +45,11 @@ import { useToast } from "@/providers/ToastProvider";
 import { ApiError } from "@/lib/api/errors";
 
 function LogWasteModal({
+  shopId,
   open,
   onOpenChange,
 }: {
+  shopId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -54,10 +58,18 @@ function LogWasteModal({
     quantity: "",
     waste_reason: "expired",
     notes: "",
+    batch_id: "",
+    unit_of_measure: "pcs",
   });
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const batchQuery = useQuery({
+    queryKey: ["inventory", "batches", shopId, form.item_id],
+    queryFn: () => inventoryApi.getBatches(form.item_id.trim(), shopId),
+    enabled: open && form.item_id.trim().length > 0,
+  });
+  const batches = batchQuery.data ?? [];
 
   const mutation = useMutation({
     mutationFn: (input: RecordWasteInput) => wasteApi.recordWaste(input),
@@ -71,6 +83,8 @@ function LogWasteModal({
         quantity: "",
         waste_reason: "expired",
         notes: "",
+        batch_id: "",
+        unit_of_measure: "pcs",
       });
       setError(null);
     },
@@ -126,6 +140,15 @@ function LogWasteModal({
             onChange={(e) => setForm({ ...form, item_id: e.target.value })}
           />
         </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-muted">Stock batch (optional)</label>
+          <Select
+            value={form.batch_id}
+            onValueChange={(value) => setForm({ ...form, batch_id: value, unit_of_measure: batches.find((batch) => batch.id === value)?.unit ?? form.unit_of_measure })}
+            options={[{ value: "", label: "Allocate FEFO automatically" }, ...batches.filter((batch) => (batch.remainingQuantity ?? 0) > 0).map((batch) => ({ value: batch.id, label: `${batch.batchNumber} · ${batch.remainingQuantity ?? batch.quantity} ${batch.unit ?? "units"}${batch.expiryDate ? ` · exp ${new Date(batch.expiryDate).toLocaleDateString()}` : ""}` }))]}
+          />
+          {form.batch_id ? <p className="mt-1 text-xs text-ink-muted">Waste will be deducted from this batch only.</p> : null}
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-ink-muted">
@@ -169,10 +192,16 @@ function LogWasteModal({
 
 export function WastePage({ shopId }: { shopId: string }) {
   const [modalOpen, setModalOpen] = useState(false);
+  const [writeOffPreviewOpen, setWriteOffPreviewOpen] = useState(false);
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { summary, events, period, setPeriod, setRange } =
     useWasteDashboard(shopId);
+  const expiredCandidates = useQuery({
+    queryKey: ["waste", "expired-candidates", shopId],
+    queryFn: () => wasteApi.listExpiredCandidates(shopId),
+    enabled: writeOffPreviewOpen,
+  });
 
   const writeOff = useMutation({
     mutationFn: () => wasteApi.writeOffExpired(shopId),
@@ -223,7 +252,7 @@ export function WastePage({ shopId }: { shopId: string }) {
             />
             <Button
               variant="secondary"
-              onClick={() => writeOff.mutate()}
+              onClick={() => setWriteOffPreviewOpen(true)}
               loading={writeOff.isPending}
             >
               Write off expired stock
@@ -310,7 +339,24 @@ export function WastePage({ shopId }: { shopId: string }) {
         )}
       </Card>
 
-      <LogWasteModal open={modalOpen} onOpenChange={setModalOpen} />
+      <Modal
+        open={writeOffPreviewOpen}
+        onOpenChange={setWriteOffPreviewOpen}
+        title="Review expired stock write-off"
+        description="Only expired batches with remaining stock will be written off. In-date batches are not affected."
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setWriteOffPreviewOpen(false)}>Cancel</Button>
+            <Button variant="danger" size="sm" loading={writeOff.isPending} disabled={expiredCandidates.isLoading || !(expiredCandidates.data?.length)} onClick={() => writeOff.mutate(undefined, { onSuccess: () => setWriteOffPreviewOpen(false) })}>Confirm write-off</Button>
+          </>
+        }
+      >
+        {expiredCandidates.isLoading ? <p className="text-sm text-ink-muted">Loading expired batches…</p> : expiredCandidates.isError ? <Alert tone="danger" title="Could not load expired batches. Close and try again." /> : !expiredCandidates.data?.length ? <EmptyState icon={PackageMinus} title="No expired batches" description="There are no expired batches with remaining stock to write off." /> : <div className="flex flex-col gap-3">
+          <div className="text-sm font-medium">{expiredCandidates.data.length} batch(es) · {formatCurrency(expiredCandidates.data.reduce((sum, row) => sum + Number(row.batch_value ?? 0), 0))} at risk</div>
+          <div className="max-h-72 overflow-auto rounded-md border border-border"><Table><TableHead><tr><TableHeaderCell>Item / batch</TableHeaderCell><TableHeaderCell>Expiry</TableHeaderCell><TableHeaderCell className="text-right">Quantity</TableHeaderCell><TableHeaderCell className="text-right">Value</TableHeaderCell></tr></TableHead><TableBody>{expiredCandidates.data.map((row, index) => <TableRow key={String(row.batch_id ?? index)}><TableCell>{String(row.item_name ?? row.item_id)}<div className="text-xs text-ink-muted">{String(row.batch_number ?? row.batch_id)}</div></TableCell><TableCell>{row.expiry_date ? new Date(String(row.expiry_date)).toLocaleDateString() : "—"}</TableCell><TableCell className="text-right">{formatQuantity(Number(row.write_off_qty ?? 0), String(row.unit ?? "pcs"))}</TableCell><TableCell className="text-right">{formatCurrency(Number(row.batch_value ?? 0))}</TableCell></TableRow>)}</TableBody></Table></div>
+        </div>}
+      </Modal>
+      <LogWasteModal shopId={shopId} open={modalOpen} onOpenChange={setModalOpen} />
     </div>
   );
 }

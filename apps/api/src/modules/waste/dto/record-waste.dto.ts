@@ -41,6 +41,8 @@ export const RecordWasteSchema = z.object({
   item_id: z.string().min(1),
   item_name: z.string().min(1).optional(),
   batch_number: z.string().optional(),
+  /** Optional physical batch target for partial waste/spoilage. */
+  batch_id: z.string().uuid().optional(),
   shop_id: z.string().optional(),
 
   quantity_wasted: z.number().nonnegative(),

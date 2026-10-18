@@ -1,7 +1,7 @@
 // apps/web/src/features/inventory/components/InventorySummary.tsx
 "use client";
 
-import { Boxes, PackageX, TimerReset, Wallet } from "lucide-react";
+import { Boxes, PackageX, TimerReset, Wallet, CalendarClock, AlertTriangle } from "lucide-react";
 import { StatCard } from "@/components/ui/StatCard";
 import { formatCurrencyCompact } from "@/lib/format/currency";
 
@@ -18,6 +18,8 @@ export interface InventorySummaryData {
   totalValue: number;
   lowOrOutCount: number;
   expiredCount: number;
+  expiredValueAtRisk?: number;
+  expiringIn7DaysCount?: number;
 }
 
 export function InventorySummary({
@@ -52,7 +54,7 @@ export function InventorySummary({
   }
 
   return (
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
       {wrap(
         "all",
         <StatCard
@@ -83,12 +85,14 @@ export function InventorySummary({
       {wrap(
         "expired",
         <StatCard
-          label="Expired items"
+          label="Expired batches"
           value={String(data.expiredCount)}
           icon={TimerReset}
         />,
         activeStatus === "expired",
       )}
+      <StatCard label="Expired value at risk" value={formatCurrencyCompact(data.expiredValueAtRisk ?? 0)} icon={AlertTriangle} />
+      <StatCard label="Expiring in 7 days" value={String(data.expiringIn7DaysCount ?? 0)} icon={CalendarClock} />
     </div>
   );
 }

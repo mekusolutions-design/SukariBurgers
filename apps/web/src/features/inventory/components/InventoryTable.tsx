@@ -1,6 +1,10 @@
 // apps/web/src/features/inventory/components/InventoryTable.tsx
 "use client";
 
+import { Fragment, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { inventoryApi } from "../api";
 import {
   Table,
   TableHead,
@@ -29,12 +33,19 @@ function formatDaysToExpiry(days: number | null | undefined): string {
 
 export function InventoryTable({
   items,
+  shopId = "1",
   isLoading = false,
 }: {
   items: InventoryItem[];
   shopId?: string;
   isLoading?: boolean;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const batchesQuery = useQuery({
+    queryKey: ["inventory", "batches", shopId, expanded],
+    queryFn: () => inventoryApi.getBatches(String(expanded), shopId),
+    enabled: Boolean(expanded),
+  });
   const list = items ?? [];
 
   if (isLoading && list.length === 0) {
@@ -74,9 +85,16 @@ export function InventoryTable({
         {list.map((item) => {
           const status = stockStatusFor(item);
           const days = item.daysToExpiryMin;
+          const isExpanded = expanded === item.itemId;
           return (
-            <TableRow key={item.itemId}>
-              <TableCell className="font-medium">{item.name}</TableCell>
+            <Fragment key={item.itemId}>
+            <TableRow>
+              <TableCell className="font-medium">
+                <button type="button" className="inline-flex items-center gap-2 text-left" onClick={() => setExpanded(isExpanded ? null : item.itemId)} aria-expanded={isExpanded}>
+                  {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  {item.name}
+                </button>
+              </TableCell>
               <TableCell className="text-ink-muted">
                 {humanize(item.category || "general")}
               </TableCell>
@@ -122,6 +140,12 @@ export function InventoryTable({
                 {item.updatedAt ? formatDateTime(item.updatedAt) : "—"}
               </TableCell>
             </TableRow>
+            {isExpanded ? <TableRow key={`${item.itemId}-batches`}>
+              <TableCell colSpan={9}>
+                {batchesQuery.isLoading ? <span className="text-sm text-ink-muted">Loading batches…</span> : batchesQuery.isError ? <span className="text-sm text-red-600">Could not load batches.</span> : batchesQuery.data?.length ? <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-ink-muted"><th className="p-2">Batch</th><th className="p-2">Received</th><th className="p-2">Expiry</th><th className="p-2 text-right">Remaining</th><th className="p-2 text-right">Unit cost</th><th className="p-2">Status</th></tr></thead><tbody>{batchesQuery.data.map((batch) => { const remaining = batch.remainingQuantity ?? 0; const expired = batch.expiryDate ? batch.expiryDate.slice(0, 10) < new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Nairobi" }).format(new Date()) : false; const statusLabel = remaining <= 0 ? "Depleted / written off" : expired ? "Expired — pending write-off" : "Usable / pending expiry"; return <tr key={batch.id} className="border-t border-border"><td className="p-2">{batch.batchNumber}</td><td className="p-2">{batch.receivedAt ? formatDateTime(batch.receivedAt) : "—"}</td><td className="p-2">{batch.expiryDate ? new Date(batch.expiryDate).toLocaleDateString() : "No expiry"}</td><td className="p-2 text-right">{formatQuantity(remaining, batch.unit ?? item.unit)}</td><td className="p-2 text-right">{formatCurrency(batch.unitCost)}</td><td className={`p-2 ${remaining <= 0 || expired ? "text-red-600 font-medium" : "text-ink-muted"}`}>{statusLabel}</td></tr>; })}</tbody></table></div> : <span className="text-sm text-ink-muted">No open batches. Existing legacy stock may require opening-batch backfill.</span>}
+              </TableCell>
+            </TableRow> : null}
+            </Fragment>
           );
         })}
       </TableBody>

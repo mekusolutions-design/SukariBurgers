@@ -19,6 +19,7 @@ export interface InventoryItem {
 }
 
 export interface InventoryBatch {
+  id: string;
   batchNumber: string;
   itemId: string;
   quantity: number;
@@ -26,6 +27,8 @@ export interface InventoryBatch {
   expiryDate: string | null;
   receivedAt: string;
   supplierId?: string | null;
+  remainingQuantity?: number;
+  unit?: string;
 }
 
 export type StockStatus =

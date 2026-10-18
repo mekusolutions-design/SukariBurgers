@@ -42,7 +42,7 @@ import {
 const PAGE_SIZE = 20;
 
 function dateOnlyToday() {
-  return new Date().toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Nairobi", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
 function isIngredientCategory(value: string): value is IngredientCategory {
@@ -558,6 +558,12 @@ export function InventoryPage({ shopId }: { shopId: string }) {
     setPage(1);
   }, [filters.search, filters.category, filters.status]);
 
+  const expiryAlerts = useQuery({
+    queryKey: ["inventory", "expiry-alerts", shopId],
+    queryFn: () => inventoryApi.getExpiryAlerts(shopId),
+    refetchInterval: 60_000,
+  });
+
   const inventory = useInventory({
     shopId,
     ...filters.queryParams,
@@ -594,6 +600,8 @@ export function InventoryPage({ shopId }: { shopId: string }) {
     totalValue: summary.data?.totalValue ?? 0,
     lowOrOutCount: summary.data?.lowOrOutCount ?? 0,
     expiredCount: summary.data?.expiredCount ?? 0,
+    expiredValueAtRisk: summary.data?.expiredValueAtRisk ?? 0,
+    expiringIn7DaysCount: summary.data?.expiringIn7DaysCount ?? 0,
   };
 
   return (
@@ -625,6 +633,7 @@ export function InventoryPage({ shopId }: { shopId: string }) {
         }}
       />
 
+      {expiryAlerts.data && expiryAlerts.data.length > 0 ? <Alert tone="warning" title={`${expiryAlerts.data.filter((row) => row.daysToExpiry < 0).length} expired batch(es) pending write-off · ${expiryAlerts.data.filter((row) => row.daysToExpiry >= 0).length} batch(es) expiring within 7 days`} description={expiryAlerts.data.slice(0, 4).map((row) => `${row.itemName} (${row.batchNumber}): ${row.quantity} ${row.unit}, ${row.daysToExpiry < 0 ? `expired ${Math.abs(row.daysToExpiry)} day(s) ago` : row.daysToExpiry === 0 ? 'expires today' : `${row.daysToExpiry} day(s) left`}`).join(' · ')} /> : null}
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
           <InventoryFilters

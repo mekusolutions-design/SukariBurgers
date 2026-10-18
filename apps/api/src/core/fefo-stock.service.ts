@@ -109,6 +109,7 @@ export class FefoStockService {
     qtyOnHandBefore: number;
     /** WAC BEFORE this receive */
     oldWac: number;
+    movementType?: string;
   }): Promise<{ newWac: number; batchId: string }> {
     const qty = Math.max(0, opts.quantity);
     const unitCost = Math.max(0, opts.unitCost);
@@ -123,19 +124,35 @@ export class FefoStockService {
       unitCost,
     );
 
-    const batch = await this.prisma.inventoryBatch.create({
-      data: {
-        shop_id: opts.shopId || '1',
-        item_id: opts.itemId,
-        batch_number: opts.batchNumber || `AUTO-${Date.now()}`,
-        qty_received: qty,
-        qty_remaining: qty,
-        unit_cost: new Prisma.Decimal(unitCost),
-        expiry_date: opts.expiryDate ?? null,
-        supplier_id: opts.supplierId ?? null,
-        event_id: opts.eventId ?? null,
-        received_at: new Date(),
-      },
+    const batch = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.inventoryBatch.create({
+        data: {
+          shop_id: opts.shopId || '1',
+          item_id: opts.itemId,
+          batch_number: opts.batchNumber || `AUTO-${Date.now()}`,
+          qty_received: qty,
+          qty_remaining: qty,
+          unit_cost: new Prisma.Decimal(unitCost),
+          expiry_date: opts.expiryDate ?? null,
+          supplier_id: opts.supplierId ?? null,
+          event_id: opts.eventId ?? null,
+          received_at: new Date(),
+        },
+      });
+      await tx.inventoryMovement.create({
+        data: {
+          shop_id: opts.shopId || '1',
+          batch_id: created.id,
+          item_id: opts.itemId,
+          movement_type: opts.movementType ?? 'RECEIPT',
+          quantity: qty,
+          unit_cost: new Prisma.Decimal(unitCost),
+          reference_type: 'receipt',
+          reference_id: opts.eventId ?? created.id,
+          idempotency_key: opts.eventId ? `receipt:${opts.eventId}:${opts.itemId}` : `receipt:${created.id}`,
+        },
+      });
+      return created;
     });
 
     await this.prisma.inventoryProjection.updateMany({
@@ -197,10 +214,13 @@ export class FefoStockService {
     shopId: string,
     itemId: string,
     qtyNeeded: number,
-    options?: { allowPartial?: boolean },
+    options?: { allowPartial?: boolean; referenceType?: string; referenceId?: string; userId?: string; movementType?: string },
   ): Promise<ConsumeStockResult> {
     const need = Math.max(0, qtyNeeded);
     const shop = shopId || '1';
+    if (!Number.isFinite(need) || need < 0) {
+      throw new BadRequestException('Requested stock quantity must be valid');
+    }
     if (need <= 0) {
       return {
         itemId,
@@ -212,91 +232,122 @@ export class FefoStockService {
       };
     }
 
-    // Ensure at least one open lot exists (seed from projection if legacy stock)
+    // Preserve legacy opening-stock support, but do it before the locked allocation.
     await this.ensureOpenLots(shop, itemId);
 
-    const batches = await this.prisma.inventoryBatch.findMany({
-      where: {
-        shop_id: shop,
-        item_id: itemId,
-        qty_remaining: { gt: 0 },
-      },
-      orderBy: [
-        { expiry_date: 'asc' }, // nulls last in Postgres by default for ASC? 
-        { received_at: 'asc' },
-      ],
-    });
+    // Expiry dates are treated as shop-local calendar dates. A batch expiring today
+    // remains usable until the next midnight in Africa/Nairobi.
+    const todayStart = this.shopLocalDayStart(new Date());
+    const allocation = await this.prisma.$transaction(async (tx) => {
+      // Lock the eligible rows and read the post-lock quantities. PostgreSQL rechecks
+      // the predicate after waiting for a concurrent updater, preventing stale drains.
+      const batches = await tx.$queryRaw<Array<{
+        id: string;
+        batch_number: string;
+        qty_remaining: number;
+        unit_cost: Prisma.Decimal;
+        expiry_date: Date | null;
+        received_at: Date;
+      }>>`SELECT id, batch_number, qty_remaining, unit_cost, expiry_date, received_at
+          FROM "InventoryBatch"
+          WHERE shop_id = ${shop} AND item_id = ${itemId}
+            AND qty_remaining > 0
+            AND (expiry_date IS NULL OR expiry_date >= ${todayStart})
+          ORDER BY expiry_date ASC NULLS LAST, received_at ASC, id ASC
+          FOR UPDATE`;
 
-    // Explicit nulls last for FEFO
-    batches.sort((a, b) => {
-      if (a.expiry_date && b.expiry_date) {
-        return a.expiry_date.getTime() - b.expiry_date.getTime();
-      }
-      if (a.expiry_date && !b.expiry_date) return -1;
-      if (!a.expiry_date && b.expiry_date) return 1;
-      return a.received_at.getTime() - b.received_at.getTime();
-    });
-
-    let remaining = need;
-    const slices: ConsumedBatchSlice[] = [];
-
-    for (const batch of batches) {
-      if (remaining <= 0) break;
-      const avail = Math.max(0, Number(batch.qty_remaining));
-      if (avail <= 0) continue;
-      const take = Math.min(avail, remaining);
-      await this.prisma.inventoryBatch.update({
-        where: { id: batch.id },
-        data: { qty_remaining: avail - take },
-      });
-      remaining -= take;
-      slices.push({
-        batchId: batch.id,
-        batchNumber: batch.batch_number,
-        quantity: take,
-        unitCost: asNumber(batch.unit_cost, 0),
-        expiryDate: batch.expiry_date,
-      });
-    }
-
-    if (remaining > 0 && !options?.allowPartial) {
-      throw new BadRequestException(
-        `Insufficient stock for ${itemId}: short by ${roundMoney(remaining, 4)}`,
+      const usable = batches.reduce(
+        (sum, batch) => sum + Math.max(0, Number(batch.qty_remaining)),
+        0,
       );
-    }
+      if (usable + 1e-9 < need && !options?.allowPartial) {
+        throw new BadRequestException(
+          `Insufficient usable stock for ${itemId}: requested ${roundMoney(need, 4)}, available ${roundMoney(usable, 4)}`,
+        );
+      }
 
-    const consumed = need - remaining;
+      let remaining = need;
+      const slices: ConsumedBatchSlice[] = [];
+      for (const batch of batches) {
+        if (remaining <= 1e-9) break;
+        const available = Math.max(0, Number(batch.qty_remaining));
+        if (available <= 0) continue;
+        const take = Math.min(available, remaining);
+        const nextQty = Math.max(0, available - take);
+        await tx.inventoryBatch.update({
+          where: { id: batch.id },
+          data: { qty_remaining: nextQty },
+        });
+        await tx.inventoryMovement.create({
+          data: {
+            shop_id: shop,
+            batch_id: batch.id,
+            item_id: itemId,
+            movement_type: options?.movementType ?? (options?.referenceType === 'production_finished' ? 'PRODUCTION_INPUT' : 'CONSUMPTION'),
+            quantity: -take,
+            unit_cost: new Prisma.Decimal(asNumber(batch.unit_cost, 0)),
+            reference_type: options?.referenceType ?? 'consumption',
+            reference_id: options?.referenceId ?? null,
+            user_id: options?.userId ?? null,
+            idempotency_key: options?.referenceId ? `${options.referenceType ?? 'consumption'}:${options.referenceId}:${batch.id}:${slices.length}` : null,
+          },
+        });
+        remaining = Math.max(0, remaining - take);
+        slices.push({
+          batchId: batch.id,
+          batchNumber: batch.batch_number,
+          quantity: take,
+          unitCost: asNumber(batch.unit_cost, 0),
+          expiryDate: batch.expiry_date,
+        });
+      }
+      return { remaining, slices, consumed: need - remaining };
+    }, { maxWait: 20000, timeout: 30000 });
+
     const unitCostWac = await this.getWac(shop, itemId);
-    const value = roundMoney(consumed * unitCostWac, 4);
-
+    const value = roundMoney(allocation.consumed * unitCostWac, 4);
     await this.refreshNearestExpiry(shop, itemId);
 
     this.logger.debug(
-      `FEFO consume ${itemId} qty=${consumed} slices=${slices.length} wac=${unitCostWac}`,
+      `FEFO consume ${itemId} qty=${allocation.consumed} slices=${allocation.slices.length} wac=${unitCostWac}`,
     );
 
     return {
       itemId,
       shopId: shop,
-      quantity: consumed,
+      quantity: allocation.consumed,
       unitCostWac,
       value,
-      slices,
+      slices: allocation.slices,
     };
+  }
+
+  /** Start of the current calendar day in the shop's Africa/Nairobi timezone. */
+  private shopLocalDayStart(now: Date): Date {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+    const part = (type: string) => parts.find((p) => p.type === type)?.value;
+    const year = Number(part('year'));
+    const month = Number(part('month'));
+    const day = Number(part('day'));
+    // Nairobi is UTC+03:00 and has no DST; midnight local is 21:00 UTC prior day.
+    return new Date(Date.UTC(year, month - 1, day) - 3 * 60 * 60 * 1000);
   }
 
   /**
    * If projection has stock but no open lots, seed one synthetic lot so FEFO can run.
    */
   async ensureOpenLots(shopId: string, itemId: string): Promise<void> {
-    const openCount = await this.prisma.inventoryBatch.count({
-      where: {
-        shop_id: shopId,
-        item_id: itemId,
-        qty_remaining: { gt: 0 },
-      },
+    // Only seed truly legacy projection-only items. A depleted historical batch
+    // means the item has already entered batch accounting and must never be reseeded.
+    const batchCount = await this.prisma.inventoryBatch.count({
+      where: { shop_id: shopId, item_id: itemId },
     });
-    if (openCount > 0) return;
+    if (batchCount > 0) return;
 
     const proj = await this.prisma.inventoryProjection.findUnique({
       where: {
@@ -311,17 +362,34 @@ export class FefoStockService {
       unitCost = asNumber(proj?.total_value, 0) / stock;
     }
 
-    await this.prisma.inventoryBatch.create({
-      data: {
-        shop_id: shopId,
-        item_id: itemId,
-        batch_number: `SEED-${itemId.slice(0, 12)}`,
-        qty_received: stock,
-        qty_remaining: stock,
-        unit_cost: new Prisma.Decimal(Math.max(0, unitCost)),
-        expiry_date: proj?.next_expiry_date ?? null,
-        received_at: proj?.last_received_at ?? new Date(),
-      },
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.inventoryBatch.count({ where: { shop_id: shopId, item_id: itemId } });
+      if (existing > 0) return;
+      const batch = await tx.inventoryBatch.create({
+        data: {
+          shop_id: shopId,
+          item_id: itemId,
+          batch_number: `SEED-${itemId.slice(0, 12)}`,
+          qty_received: stock,
+          qty_remaining: stock,
+          unit_cost: new Prisma.Decimal(Math.max(0, unitCost)),
+          expiry_date: proj?.next_expiry_date ?? null,
+          received_at: proj?.last_received_at ?? new Date(),
+        },
+      });
+      await tx.inventoryMovement.create({
+        data: {
+          shop_id: shopId,
+          batch_id: batch.id,
+          item_id: itemId,
+          movement_type: 'OPENING_BALANCE',
+          quantity: stock,
+          unit_cost: new Prisma.Decimal(Math.max(0, unitCost)),
+          reference_type: 'legacy_opening_stock',
+          reference_id: `opening:${shopId}:${itemId}`,
+          idempotency_key: `opening:${shopId}:${itemId}`,
+        },
+      });
     });
 
     this.logger.log(

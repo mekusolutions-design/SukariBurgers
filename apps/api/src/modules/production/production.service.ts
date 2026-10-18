@@ -3,6 +3,7 @@ import { quantityInItemUnit, toCanonicalStockQty } from '../../common/utils/stoc
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { EventStoreService } from '../../core/event-store.service';
+import { FefoStockService } from '../../core/fefo-stock.service';
 import { IdempotencyService } from '../../core/idempotency.service';
 import { RecipeService } from '../recipe/recipe.service';
 import { WasteService } from '../waste/waste.service';
@@ -149,7 +150,57 @@ export class ProductionService {
     private readonly productionGateway: ProductionGateway,
     private readonly varianceService: VarianceService,
     private readonly prisma: PrismaService,
+    private readonly fefoStock: FefoStockService,
   ) {}
+
+  async getProductionTrace(productionId: string, shopId: string = '1') {
+    const inputs = await this.prisma.productionInput.findMany({
+      where: { shop_id: shopId, production_id: productionId },
+      orderBy: [{ input_item_id: 'asc' }, { created_at: 'asc' }],
+    });
+    const batchIds = [...new Set(inputs.map((row) => row.input_batch_id))];
+    const outputBatchIds = [...new Set(inputs.map((row) => row.output_batch_id).filter((id): id is string => Boolean(id)))];
+    const allBatchIds = [...new Set([...batchIds, ...outputBatchIds])];
+    const batches = await this.prisma.inventoryBatch.findMany({
+      where: { shop_id: shopId, id: { in: allBatchIds } },
+      include: { item: { select: { name: true, unit: true } } },
+    });
+    const batchById = new Map(batches.map((batch) => [batch.id, batch]));
+    return {
+      success: true,
+      shop_id: shopId,
+      production_id: productionId,
+      inputs: inputs.map((input) => ({
+        ...input,
+        input_batch: batchById.get(input.input_batch_id) ?? null,
+        output_batch: input.output_batch_id ? batchById.get(input.output_batch_id) ?? null : null,
+      })),
+    };
+  }
+
+  async getRawBatchTrace(batchId: string, shopId: string = '1') {
+    const batch = await this.prisma.inventoryBatch.findFirst({
+      where: { id: batchId, shop_id: shopId },
+      include: { item: { select: { name: true, unit: true } } },
+    });
+    if (!batch) return { success: false, shop_id: shopId, batch_id: batchId, productions: [] };
+    const inputs = await this.prisma.productionInput.findMany({
+      where: { shop_id: shopId, input_batch_id: batchId },
+      orderBy: { created_at: 'asc' },
+    });
+    const outputIds = [...new Set(inputs.map((input) => input.output_batch_id).filter((id): id is string => Boolean(id)))];
+    const outputBatches = await this.prisma.inventoryBatch.findMany({
+      where: { shop_id: shopId, id: { in: outputIds } },
+      include: { item: { select: { name: true, unit: true } } },
+    });
+    const outputById = new Map(outputBatches.map((row) => [row.id, row]));
+    return {
+      success: true,
+      shop_id: shopId,
+      raw_batch: batch,
+      productions: inputs.map((input) => ({ ...input, output_batch: input.output_batch_id ? outputById.get(input.output_batch_id) ?? null : null })),
+    };
+  }
 
   async startProduction(
     dto: StartProductionDto,
@@ -727,40 +778,46 @@ export class ProductionService {
     inputs: LineActual[],
   ): Promise<void> {
     const shortages: string[] = [];
+    const todayStart = this.shopLocalDayStart(new Date());
 
     for (const line of inputs) {
       const sku = normalizeSku(line.item_id) || line.item_id;
       if (!sku || line.actual_quantity <= 0) continue;
 
+      // Preserve legacy projection-only stock by creating a single opening lot
+      // before checking availability; this does not write off expired stock.
+      await this.fefoStock.ensureOpenLots(shopId, sku);
       const proj = await this.prisma.inventoryProjection.findUnique({
-        where: {
-          shop_id_item_id: { shop_id: shopId, item_id: sku },
-        },
+        where: { shop_id_item_id: { shop_id: shopId, item_id: sku } },
         include: { item: true },
       });
-
-      const available = Number(proj?.available_stock ?? 0);
       const stockUnit = proj?.item?.unit ?? line.unit ?? 'pcs';
       const needUnit = line.unit ?? stockUnit;
-
-      const availableInNeedUnits = convertQuantity(
-        available,
-        stockUnit,
-        needUnit,
-      );
-
-      if (availableInNeedUnits + 1e-9 < line.actual_quantity) {
-        shortages.push(
-          `${line.item_name || sku}: need ${line.actual_quantity} ${needUnit}, have ${available} ${stockUnit}`,
-        );
+      const usableBatches = await this.prisma.inventoryBatch.findMany({
+        where: {
+          shop_id: shopId,
+          item_id: sku,
+          qty_remaining: { gt: 0 },
+          OR: [{ expiry_date: null }, { expiry_date: { gte: todayStart } }],
+        },
+        select: { qty_remaining: true },
+      });
+      const usableBaseQty = usableBatches.reduce((sum, batch) => sum + Number(batch.qty_remaining), 0);
+      const usableInNeedUnits = convertQuantity(usableBaseQty, stockUnit, needUnit);
+      if (usableInNeedUnits + 1e-9 < line.actual_quantity) {
+        shortages.push(`${line.item_name || sku}: need ${line.actual_quantity} ${needUnit}, have ${usableInNeedUnits} ${needUnit} usable (expired batches excluded)`);
       }
     }
 
     if (shortages.length > 0) {
-      throw new BadRequestException(
-        `Insufficient stock for production:\n${shortages.join('\n')}`,
-      );
+      throw new BadRequestException(`Insufficient usable stock for production:\n${shortages.join('\n')}`);
     }
+  }
+
+  private shopLocalDayStart(now: Date): Date {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value;
+    return new Date(Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day'))) - 3 * 60 * 60 * 1000);
   }
 
   private async resolveStartContext(productionId: string): Promise<{

@@ -78,6 +78,8 @@ export interface InventorySummaryStats {
   lowOrOutCount: number;
   expiredCount: number;
   nearExpiryCount: number;
+  expiredValueAtRisk: number;
+  expiringIn7DaysCount: number;
 }
 
 @Injectable()
@@ -141,6 +143,19 @@ export class InventoryService {
       }
     }
 
+    const todayStart = this.shopLocalDayStart(new Date());
+    const inSevenDays = new Date(todayStart.getTime() + 8 * 86400000);
+    const expiredBatches = await this.prisma.inventoryBatch.findMany({
+      where: { shop_id: shopId, qty_remaining: { gt: 0 }, expiry_date: { not: null, lt: todayStart } },
+      select: { qty_remaining: true, unit_cost: true },
+    });
+    const expiringBatches = await this.prisma.inventoryBatch.findMany({
+      where: { shop_id: shopId, qty_remaining: { gt: 0 }, expiry_date: { gte: todayStart, lt: inSevenDays } },
+      select: { id: true },
+    });
+    expiredCount = expiredBatches.length;
+    const expiredValueAtRisk = expiredBatches.reduce((sum, batch) => sum + Number(batch.qty_remaining) * Number(batch.unit_cost), 0);
+
     return {
       shopId,
       totalItems: activeItems,
@@ -150,6 +165,8 @@ export class InventoryService {
       lowOrOutCount: lowStockCount + outOfStockCount,
       expiredCount,
       nearExpiryCount,
+      expiredValueAtRisk: Math.round(expiredValueAtRisk * 100) / 100,
+      expiringIn7DaysCount: expiringBatches.length,
     };
   }
 
@@ -295,6 +312,51 @@ export class InventoryService {
       limit: take,
       totalPages: Math.ceil(total / take) || 1,
     };
+  }
+
+  private shopLocalDayStart(now: Date): Date {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value;
+    return new Date(Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day'))) - 3 * 60 * 60 * 1000);
+  }
+
+  async getBatches(itemId: string, shopId: string = '1') {
+    const item = await this.prisma.item.findUnique({ where: { item_id: itemId }, select: { item_id: true, unit: true, name: true } });
+    if (!item) return { success: true, item_id: itemId, unit: 'pcs', batches: [] };
+    const batches = await this.prisma.inventoryBatch.findMany({
+      where: { shop_id: shopId, item_id: itemId },
+      orderBy: [{ expiry_date: 'asc' }, { received_at: 'asc' }, { id: 'asc' }],
+      select: { id: true, batch_number: true, item_id: true, qty_received: true, qty_remaining: true, unit_cost: true, expiry_date: true, received_at: true, supplier_id: true },
+    });
+    return { success: true, item_id: itemId, item_name: item.name, unit: item.unit, batches };
+  }
+
+  async getExpiryAlerts(shopId: string = '1') {
+    const todayStart = this.shopLocalDayStart(new Date());
+    const inSevenDays = new Date(todayStart.getTime() + 8 * 86400000);
+    const rows = await this.prisma.inventoryBatch.findMany({
+      where: { shop_id: shopId, qty_remaining: { gt: 0 }, expiry_date: { not: null, lt: inSevenDays } },
+      include: { item: { select: { name: true, unit: true } } },
+      orderBy: [{ expiry_date: 'asc' }, { received_at: 'asc' }, { id: 'asc' }],
+      take: 1000,
+    });
+    return { success: true, shop_id: shopId, items: rows.map((batch) => {
+      const expiry = batch.expiry_date!;
+      const expiryDay = this.shopLocalDayStart(expiry);
+      const days = Math.floor((expiryDay.getTime() - todayStart.getTime()) / 86400000);
+      const quantity = Number(batch.qty_remaining);
+      const unitCost = Number(batch.unit_cost);
+      return { batch_id: batch.id, batch_number: batch.batch_number, item_id: batch.item_id, item_name: batch.item.name, unit: batch.item.unit, quantity, unit_cost: unitCost, value_at_risk: quantity * unitCost, expiry_date: expiry, days_to_expiry: days, status: days < 0 ? 'expired_pending_writeoff' : days <= 1 ? 'expires_within_1_day' : days <= 3 ? 'expires_within_3_days' : 'expires_within_7_days' };
+    }) };
+  }
+
+  async getMovements(itemId: string, shopId: string = '1', limit = 100) {
+    const movements = await this.prisma.inventoryMovement.findMany({
+      where: { shop_id: shopId, item_id: itemId },
+      orderBy: { created_at: 'desc' },
+      take: Math.min(500, Math.max(1, limit)),
+    });
+    return { success: true, shop_id: shopId, item_id: itemId, items: movements, count: movements.length };
   }
 
   async getStockByItem(

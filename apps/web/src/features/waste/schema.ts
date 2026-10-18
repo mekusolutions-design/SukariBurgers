@@ -13,6 +13,8 @@ export const recordWasteSchema = z.object({
     "other",
   ]),
   notes: z.string().optional(),
+  batch_id: z.string().optional(),
+  unit_of_measure: z.string().optional(),
 });
 
 export type RecordWasteInput = z.infer<typeof recordWasteSchema>;

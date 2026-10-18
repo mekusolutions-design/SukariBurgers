@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Post,
   Query,
+  Param,
   UseGuards,
   UsePipes,
 } from '@nestjs/common';
@@ -45,6 +46,21 @@ interface AuthenticatedUser {
 @UseGuards(RolesGuard)
 export class ProductionController {
   constructor(private readonly productionService: ProductionService) {}
+
+  @Get('trace/raw-batch/:batchId')
+  @Roles('KITCHEN', 'MANAGER', 'ADMIN')
+  @ApiOperation({ summary: 'Trace finished goods produced from a raw stock batch' })
+  rawBatchTrace(@CurrentShop() scopedShop: string, @Param('batchId') batchId: string) {
+    return this.productionService.getRawBatchTrace(batchId, scopedShop);
+  }
+
+  @Get('trace')
+  @Roles('KITCHEN', 'MANAGER', 'ADMIN')
+  @ApiOperation({ summary: 'Trace raw batch inputs and finished batch for a production run' })
+  async productionTrace(@CurrentShop() scopedShop: string, @Query('productionId') productionId?: string) {
+    if (!productionId) return { success: false, message: 'productionId is required' };
+    return this.productionService.getProductionTrace(productionId, scopedShop);
+  }
 
   @Get('history')
   @Roles('KITCHEN', 'MANAGER', 'ADMIN')

@@ -29,6 +29,8 @@ export interface InventorySummaryStats {
   lowOrOutCount: number;
   expiredCount: number;
   nearExpiryCount: number;
+  expiredValueAtRisk: number;
+  expiringIn7DaysCount: number;
 }
 
 /** Prefer API live days; if only next_expiry_date is present, derive days client-side. */
@@ -102,9 +104,12 @@ function toInventoryItem(raw: Record<string, unknown>): InventoryItem {
 
 function toInventoryBatch(raw: Record<string, unknown>): InventoryBatch {
   return {
+    id: String(raw.id ?? ""),
     batchNumber: String(raw.batchNumber ?? raw.batch_number ?? ""),
+    unit: String(raw.unit ?? "pcs"),
     itemId: String(raw.itemId ?? raw.item_id ?? ""),
-    quantity: Number(raw.quantity ?? 0),
+    quantity: Number(raw.qty_received ?? raw.quantity ?? 0),
+    remainingQuantity: Number(raw.qty_remaining ?? raw.remainingQuantity ?? raw.quantity ?? 0),
     unitCost: Number(raw.unitCost ?? raw.unit_cost ?? 0),
     expiryDate:
       raw.expiryDate != null || raw.expiry_date != null
@@ -171,23 +176,35 @@ export const inventoryApi = {
         lowOrOutCount: Number(root.lowOrOutCount ?? 0),
         expiredCount: Number(root.expiredCount ?? 0),
         nearExpiryCount: Number(root.nearExpiryCount ?? 0),
+        expiredValueAtRisk: Number(root.expiredValueAtRisk ?? 0),
+        expiringIn7DaysCount: Number(root.expiringIn7DaysCount ?? 0),
       };
     } catch (error) {
       throw toApiError(error);
     }
   },
 
-  async getBatches(itemId: string): Promise<InventoryBatch[]> {
+  async getBatches(itemId: string, shopId?: string): Promise<InventoryBatch[]> {
     try {
-      const { data } = await apiClient.get(endpoints.inventory.batches(itemId));
+      const { data } = await apiClient.get(`${endpoints.inventory.batches(itemId)}${buildQueryString({ shopId })}`);
       const root = (data ?? {}) as Record<string, unknown>;
       const rows = asArray<Record<string, unknown>>(
         root.batches ?? root.items ?? data,
       );
-      return rows.map(toInventoryBatch);
+      return rows.map((row) => toInventoryBatch({ ...row, unit: row.unit ?? root.unit }));
     } catch (error) {
       throw toApiError(error);
     }
+  },
+
+  async getExpiryAlerts(shopId: string): Promise<Array<{ batchId: string; batchNumber: string; itemId: string; itemName: string; unit: string; quantity: number; valueAtRisk: number; expiryDate: string; daysToExpiry: number; status: string }>> {
+    try {
+      const { data } = await apiClient.get(`/inventory/expiry-alerts${buildQueryString({ shopId })}`);
+      const root = (data ?? {}) as Record<string, unknown>;
+      return asArray<Record<string, unknown>>(root.items ?? data).map((row) => ({
+        batchId: String(row.batch_id ?? ''), batchNumber: String(row.batch_number ?? ''), itemId: String(row.item_id ?? ''), itemName: String(row.item_name ?? row.item_id ?? ''), unit: String(row.unit ?? 'pcs'), quantity: Number(row.quantity ?? 0), valueAtRisk: Number(row.value_at_risk ?? 0), expiryDate: String(row.expiry_date ?? ''), daysToExpiry: Number(row.days_to_expiry ?? 0), status: String(row.status ?? ''),
+      }));
+    } catch (error) { throw toApiError(error); }
   },
 
   async getAlerts(shopId: string): Promise<InventoryItem[]> {

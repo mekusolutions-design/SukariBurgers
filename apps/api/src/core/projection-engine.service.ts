@@ -199,7 +199,7 @@ export class ProjectionEngineService {
           break;
 
         case 'finished_good_adjusted':
-          await this.handleAdjustment(payload, shopId);
+          await this.handleAdjustment(payload, shopId, event);
           break;
 
         case 'refill_issued':
@@ -256,6 +256,7 @@ export class ProjectionEngineService {
     shopId: string,
     event: Pick<
       ProjectionEvent,
+      | 'id'
       | 'item_id'
       | 'quantity'
       | 'total_cost'
@@ -281,6 +282,7 @@ export class ProjectionEngineService {
     const outputs: Record<string, unknown>[] = Array.isArray(payload.outputs)
       ? payload.outputs.map((row) => asLine(row))
       : [];
+    let earliestInputExpiry: Date | null = null;
 
     for (const line of inputs) {
       const itemId = asString(line['item_id'] ?? line['itemId']);
@@ -300,47 +302,58 @@ export class ProjectionEngineService {
         unit: asString(line['unit']),
       });
 
-      const unitCost = asNumber(line['unit_cost'] ?? line['unitCost']);
-      const value = qty * unitCost;
-
+      const requestedUnitCost = asNumber(line['unit_cost'] ?? line['unitCost']);
+      let consumed;
+      try {
+        consumed = await this.fefoStock.consumeStock(shopId, itemId, qty, {
+          allowPartial: false,
+          referenceType: 'production_finished',
+          referenceId: String((payload.production_id ?? payload.productionId ?? event.id) || event.id),
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Production FEFO allocation rejected ${itemId}; projection deduction skipped: ${message}`);
+        continue;
+      }
+      for (const slice of consumed.slices) {
+        if (slice.expiryDate && (!earliestInputExpiry || slice.expiryDate.getTime() < earliestInputExpiry.getTime())) {
+          earliestInputExpiry = slice.expiryDate;
+        }
+      }
+      const unitCost = consumed.unitCostWac > 0 ? consumed.unitCostWac : requestedUnitCost;
+      const value = consumed.value > 0 ? consumed.value : qty * unitCost;
       const existing = await this.activeDb.inventoryProjection.findUnique({
-        where: {
-          shop_id_item_id: { shop_id: shopId, item_id: itemId },
-        },
+        where: { shop_id_item_id: { shop_id: shopId, item_id: itemId } },
       });
-
       const prev = Number(existing?.available_stock ?? 0);
-      const nextStock = Math.max(0, prev - qty);
+      const nextStock = Math.max(0, prev - consumed.quantity);
       const prevValue = Number(existing?.total_value ?? 0);
-      const nextValue = Math.max(0, prevValue - (value > 0 ? value : 0));
-
+      const nextValue = Math.max(0, prevValue - value);
       const row = await this.activeDb.inventoryProjection.upsert({
-        where: {
-          shop_id_item_id: { shop_id: shopId, item_id: itemId },
-        },
-        update: {
-          available_stock: nextStock, // TODO: prefer conditional atomic update when concurrent load is high
-          ...(value > 0 ? { total_value: nextValue } : {}),
-        },
-        create: {
-          shop_id: shopId,
-          item_id: itemId,
-          available_stock: 0,
-          total_value: 0,
-          expired_stock: 0,
-          damaged_stock: 0,
-        },
+        where: { shop_id_item_id: { shop_id: shopId, item_id: itemId } },
+        update: { available_stock: nextStock, ...(value > 0 ? { total_value: nextValue } : {}) },
+        create: { shop_id: shopId, item_id: itemId, available_stock: 0, total_value: 0, expired_stock: 0, damaged_stock: 0 },
       });
 
-      this.logger.debug(
-        `Production deduct ${itemId}: ${prev} → ${nextStock} (−${qty})`,
-      );
-      await this.emitStock(
-        itemId,
-        shopId,
-        row,
-        asString(line['item_name'] ?? line['itemName']),
-      );
+      const productionId = asString(payload.production_id ?? payload.productionId ?? event.id);
+      for (const slice of consumed.slices) {
+        await this.activeDb.productionInput.upsert({
+          where: { production_id_input_batch_id_input_item_id: { production_id: productionId, input_batch_id: slice.batchId, input_item_id: itemId } },
+          update: { qty_used: { increment: slice.quantity }, unit_cost: slice.unitCost, production_event_id: event.id },
+          create: {
+            shop_id: shopId,
+            production_id: productionId,
+            production_event_id: event.id,
+            input_batch_id: slice.batchId,
+            input_item_id: itemId,
+            output_item_id: asString(payload.item_id ?? payload.itemId ?? event.item_id) || null,
+            qty_used: slice.quantity,
+            unit_cost: slice.unitCost,
+          },
+        });
+      }
+      this.logger.debug(`Production FEFO deduct ${itemId}: ${prev} → ${nextStock} (−${consumed.quantity})`);
+      await this.emitStock(itemId, shopId, row, asString(line['item_name'] ?? line['itemName']));
     }
 
     if (outputs.length > 0) {
@@ -378,6 +391,14 @@ export class ProjectionEngineService {
           }
         }
 
+        // Finished-goods expiry is the earlier of the declared/recipe expiry
+        // and the earliest expiring raw batch consumed in this production run.
+        const declaredExpiry = payload.expiry_date ? new Date(String(payload.expiry_date)) : null;
+        const validDeclaredExpiry = declaredExpiry && !Number.isNaN(declaredExpiry.getTime()) ? declaredExpiry : null;
+        const outputExpiry = [validDeclaredExpiry, earliestInputExpiry]
+          .filter((date): date is Date => Boolean(date))
+          .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+
         // Pass 'Finished Goods' category for production outputs
         await this.handleStockIncrease(
           {
@@ -388,17 +409,19 @@ export class ProjectionEngineService {
             unit_cost: unitCost,
             unit: asString(line['unit']),
             category: FINISHED_GOODS_CATEGORY,
-            expiry_date: payload.expiry_date,
+            expiry_date: outputExpiry?.toISOString() ?? undefined,
             batch_number:
-              asString(payload.batch_number) ?? event.batch_number ?? undefined,
+              asString(payload.batch_number) || event.batch_number || undefined,
+            production_id: asString(payload.production_id ?? payload.productionId) || undefined,
           },
           shopId,
           {
+            id: event.id,
             item_id: itemId,
             quantity: qty,
             total_cost: totalCost,
             unit_cost: unitCost > 0 ? unitCost : null,
-            expiry_date: event.expiry_date,
+            expiry_date: outputExpiry,
           },
         );
       }
@@ -588,7 +611,7 @@ export class ProjectionEngineService {
         asString(payload.batch_number) ||
         asString((event as { batch_number?: string }).batch_number) ||
         `RCV-${Date.now()}`;
-      await this.fefoStock.recordReceiveBatch({
+      const createdBatch = await this.fefoStock.recordReceiveBatch({
         shopId,
         itemId,
         batchNumber: batchNumber || `RCV-${Date.now()}`,
@@ -599,7 +622,15 @@ export class ProjectionEngineService {
         eventId: asString((event as { id?: string }).id) || null,
         qtyOnHandBefore,
         oldWac,
+        movementType: asString(payload.production_id ?? payload.productionId) ? 'PRODUCTION_OUTPUT' : 'RECEIPT',
       });
+      const productionId = asString(payload.production_id ?? payload.productionId);
+      if (productionId && createdBatch.batchId) {
+        await this.activeDb.productionInput.updateMany({
+          where: { shop_id: shopId, production_id: productionId, output_item_id: itemId, output_batch_id: null },
+          data: { output_batch_id: createdBatch.batchId },
+        });
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`FEFO recordReceiveBatch failed: ${message}`);
@@ -735,60 +766,87 @@ export class ProjectionEngineService {
   private async handleAdjustment(
     payload: BasePayload,
     shopId: string,
+    event: ProjectionEvent,
   ): Promise<void> {
     const itemId = asString(payload.item_id);
     const change = asNumber(payload.adjustment_quantity ?? payload.quantity);
     if (!itemId || change === 0) return;
 
     await this.ensureItemExists(itemId, payload);
-
     const reason = String(payload.reason || '').toLowerCase();
     const abs = Math.abs(change);
-
     const existing = await this.activeDb.inventoryProjection.findUnique({
-      where: {
-        shop_id_item_id: { shop_id: shopId, item_id: itemId },
-      },
+      where: { shop_id_item_id: { shop_id: shopId, item_id: itemId } },
     });
     const prev = Number(existing?.available_stock ?? 0);
-    const nextStock = change > 0 ? prev + change : Math.max(0, prev - abs);
+    const currentWac = Number(existing?.avg_unit_cost ?? 0);
+    let adjustmentValue = abs * currentWac;
 
+    if (change < 0) {
+      try {
+        const consumed = await this.fefoStock.consumeStock(shopId, itemId, abs, {
+          allowPartial: false,
+          referenceType: 'finished_good_adjusted',
+          referenceId: event.id,
+          movementType: 'ADJUSTMENT',
+        });
+        adjustmentValue = consumed.value;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Batch adjustment rejected ${itemId}; projection adjustment skipped: ${message}`);
+        return;
+      }
+    } else {
+      const unitCost = Math.max(0, asNumber(payload.unit_cost ?? payload.unitCost, currentWac));
+      try {
+        await this.fefoStock.recordReceiveBatch({
+          shopId,
+          itemId,
+          batchNumber: asString(payload.batch_number) || `ADJ-${event.id.slice(0, 12)}`,
+          quantity: change,
+          unitCost,
+          expiryDate: payload.expiry_date ? new Date(String(payload.expiry_date)) : null,
+          eventId: event.id,
+          qtyOnHandBefore: prev,
+          oldWac: currentWac,
+          movementType: 'ADJUSTMENT',
+        });
+        adjustmentValue = change * unitCost;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Adjustment batch creation failed for ${itemId}; projection adjustment skipped: ${message}`);
+        return;
+      }
+    }
+
+    const nextStock = change > 0 ? prev + change : Math.max(0, prev - abs);
+    const nextValue = change > 0
+      ? Number(existing?.total_value ?? 0) + adjustmentValue
+      : Math.max(0, Number(existing?.total_value ?? 0) - adjustmentValue);
     const row = await this.activeDb.inventoryProjection.upsert({
-      where: {
-        shop_id_item_id: { shop_id: shopId, item_id: itemId },
-      },
+      where: { shop_id_item_id: { shop_id: shopId, item_id: itemId } },
       update: {
         available_stock: nextStock,
-        ...(reason.includes('damage') && change < 0
-          ? { damaged_stock: { increment: abs } }
-          : {}),
-        ...(reason.includes('expir') && change < 0
-          ? { expired_stock: { increment: abs } }
-          : {}),
+        total_value: nextValue,
+        ...(reason.includes('damage') && change < 0 ? { damaged_stock: { increment: abs } } : {}),
+        ...(reason.includes('expir') && change < 0 ? { expired_stock: { increment: abs } } : {}),
       },
       create: {
         shop_id: shopId,
         item_id: itemId,
         available_stock: Math.max(0, change),
+        total_value: Math.max(0, nextValue),
         damaged_stock: 0,
         expired_stock: 0,
-        total_value: 0,
       },
     });
 
     if (change < 0 && (reason.includes('damage') || reason.includes('expir'))) {
-      await this.upsertWasteProjection(shopId, itemId, abs, 0, reason);
+      await this.upsertWasteProjection(shopId, itemId, abs, adjustmentValue, reason);
     }
     await this.emitStock(itemId, shopId, row, asString(payload.item_name));
   }
 
-  /**
-   * Refill issued = replenishment into shop available stock (mini receive).
-   * - +issued_qty on available_stock
-   * - optional total_value / unit_cost
-   * - batch/expiry from event or payload
-   * - lost_weight recorded as waste only (not double-subtracted from the add)
-   */
   private async handleRefillIssued(
     payload: BasePayload,
     shopId: string,
@@ -1059,13 +1117,15 @@ export class ProjectionEngineService {
 
       let valueDrop = 0;
       let unitCostWac = d.unit_cost;
+      let consumedQuantity = 0;
       try {
         const consumed = await this.fefoStock.consumeStock(
           shopId,
           d.item_id,
           d.quantity,
-          { allowPartial: true },
+          { allowPartial: false, referenceType: event.event_type, referenceId: event.id },
         );
+        consumedQuantity = consumed.quantity;
         unitCostWac =
           consumed.unitCostWac > 0 ? consumed.unitCostWac : d.unit_cost;
         valueDrop = consumed.value > 0 ? consumed.value : 0;
@@ -1078,7 +1138,10 @@ export class ProjectionEngineService {
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`FEFO consume failed ${d.item_id}: ${message}`);
+        // The source event remains auditable, but never partially mutate the batch
+        // ledger or decrement the aggregate projection after failed allocation.
+        this.logger.error(`FEFO consume rejected ${d.item_id}; projection deduction skipped: ${message}`);
+        continue;
       }
 
       const existing = await this.activeDb.inventoryProjection.findUnique({
@@ -1087,13 +1150,13 @@ export class ProjectionEngineService {
         },
       });
       const prev = Number(existing?.available_stock ?? 0);
-      const nextStock = Math.max(0, prev - d.quantity);
+      const nextStock = Math.max(0, prev - consumedQuantity);
 
       if (!(unitCostWac > 0) && prev > 0) {
         unitCostWac = Number(existing?.total_value ?? 0) / prev;
       }
       if (!(valueDrop > 0) && unitCostWac > 0) {
-        valueDrop = unitCostWac * d.quantity;
+        valueDrop = unitCostWac * consumedQuantity;
       }
       const prevValue = Number(existing?.total_value ?? 0);
       const nextValue = Math.max(0, prevValue - valueDrop);

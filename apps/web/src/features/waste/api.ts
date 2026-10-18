@@ -105,12 +105,13 @@ function toRecordWasteBody(input: RecordWasteInput) {
     item_id: input.item_id.trim(),
     item_name: input.item_id.trim(),
     quantity_wasted: input.quantity,
-    unit_of_measure: "pcs",
+    unit_of_measure: input.unit_of_measure ?? "pcs",
     waste_type: "spoilage" as const,
     waste_reason: reasonLabels[input.waste_reason] ?? input.waste_reason,
     root_cause: "unknown" as const,
     severity: "medium" as const,
     notes: input.notes,
+    ...(input.batch_id ? { batch_id: input.batch_id } : {}),
   };
 }
 

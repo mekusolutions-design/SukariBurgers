@@ -3,151 +3,76 @@ import { Process, Processor } from '@nestjs/bull';
 import { Injectable, Logger } from '@nestjs/common';
 import type { Job } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
-import { EventStoreService } from '../core/event-store.service';
 
 /**
- * Daily expiry sweep — IDEMPOTENT
- *
- * Fully expired batches → one `batch_expired` event (key: expiry-{sourceEventId})
- * Near-expiry (1–7 days) → refresh days_to_expiry_min + alert only
+ * Batch-aware expiry monitor. This job only refreshes expiry read-model fields
+ * and emits operational warnings; it never writes off stock automatically.
+ * Manual confirmation continues through WasteService.writeOffExpired().
  */
 @Processor('expiry-sweep')
 @Injectable()
 export class ExpirySweepProcessor {
   private readonly logger = new Logger(ExpirySweepProcessor.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly eventStore: EventStoreService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   @Process('sweep')
   async handleExpirySweep(job: Job<{ shopId?: string }>) {
     const shopId = job.data?.shopId || '1';
-    this.logger.log(`Starting expiry sweep for shop ${shopId}`);
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const nearExpiryThreshold = new Date(today);
-    nearExpiryThreshold.setDate(today.getDate() + 7);
-
-    const candidates = await this.prisma.event.findMany({
+    const todayStart = this.shopLocalDayStart(new Date());
+    const inSevenDays = new Date(todayStart.getTime() + 8 * 86400000);
+    const batches = await this.prisma.inventoryBatch.findMany({
       where: {
         shop_id: shopId,
-        event_type: {
-          in: ['received', 'finished_good_added', 'production_finished'],
-        },
-        expiry_date: { lte: nearExpiryThreshold },
+        qty_remaining: { gt: 0 },
+        expiry_date: { not: null, lt: inSevenDays },
       },
-      select: {
-        id: true,
-        item_id: true,
-        batch_number: true,
-        expiry_date: true,
-        quantity: true,
-        unit_cost: true,
-        total_cost: true,
-        payload: true,
-      },
-      orderBy: { expiry_date: 'asc' },
+      include: { item: { select: { name: true, unit: true } } },
+      orderBy: [{ expiry_date: 'asc' }, { received_at: 'asc' }, { id: 'asc' }],
+      take: 5000,
     });
 
-    if (candidates.length === 0) {
-      this.logger.log('No near/expired batches found');
-      return { processed: 0, expired: 0, alerts: 0 };
-    }
-
-    let expiredCount = 0;
-    let alertCount = 0;
-
-    for (const batch of candidates) {
-      const payload = (batch.payload || {}) as Record<string, any>;
-      const itemId =
-        batch.item_id || (payload.item_id as string | undefined);
-      const quantity = Number(
-        batch.quantity ??
-          payload.quantity_approved ??
-          payload.quantity ??
-          payload.actual_quantity_produced ??
-          0,
-      );
-
-      if (!itemId || quantity <= 0 || !batch.expiry_date) continue;
-
-      const daysLeft = Math.floor(
-        (batch.expiry_date.getTime() - today.getTime()) /
-          (1000 * 60 * 60 * 24),
-      );
-
-      if (daysLeft <= 0) {
-        const idempotencyKey = `expiry-${batch.id}`;
-
-        try {
-          await this.eventStore.appendEvent({
-            event_type: 'batch_expired',
-            actor_user_id: 'system-expiry-sweep',
-            idempotency_key: idempotencyKey,
-            batch_number: batch.batch_number || undefined,
-            expiry_date: batch.expiry_date,
-            waste_reason: 'expired',
-            payload: {
-              item_id: itemId,
-              item_name: payload.item_name,
-              quantity,
-              unit_cost: Number(batch.unit_cost ?? payload.unit_cost ?? 0),
-              total_cost: Number(
-                batch.total_cost ??
-                  payload.total_cost ??
-                  quantity * Number(payload.unit_cost ?? 0),
-              ),
-              source_event_id: batch.id,
-              batch_number: batch.batch_number,
-              expiry_date: batch.expiry_date.toISOString(),
-              units: payload.units || payload.unit,
-            },
-          });
-          expiredCount += 1;
-          this.logger.log(
-            `Expired batch recorded: ${quantity} of ${itemId} (source ${batch.id})`,
-          );
-        } catch (err: any) {
-          this.logger.debug(
-            `Skip/conflict expiry for ${batch.id}: ${err?.message || err}`,
-          );
-        }
-        continue;
-      }
-
-      if (daysLeft <= 7) {
-        alertCount += 1;
-        try {
-          await this.prisma.inventoryProjection.updateMany({
-            where: { shop_id: shopId, item_id: itemId },
-            data: {
-              days_to_expiry_min: daysLeft,
-              next_expiry_date: batch.expiry_date,
-              updated_at: new Date(),
-            },
-          });
-        } catch {
-          // projection may not exist yet
-        }
-
-        this.logger.warn(
-          `[ALERT] ${quantity} of ${itemId} expires in ${daysLeft} day(s)`,
-        );
+    const summary = { processed: batches.length, expired: 0, sevenDay: 0, threeDay: 0, oneDay: 0 };
+    const touchedItems = new Set<string>();
+    for (const batch of batches) {
+      if (!batch.expiry_date) continue;
+      const expiryDay = this.shopLocalDayStart(batch.expiry_date);
+      const daysLeft = Math.floor((expiryDay.getTime() - todayStart.getTime()) / 86400000);
+      touchedItems.add(batch.item_id);
+      const qty = Number(batch.qty_remaining);
+      const value = qty * Number(batch.unit_cost);
+      if (daysLeft < 0) {
+        summary.expired += 1;
+        this.logger.warn(`[EXPIRY_PENDING_WRITE_OFF] shop=${shopId} item=${batch.item_id} batch=${batch.batch_number} qty=${qty} ${batch.item.unit} value=${value.toFixed(2)} expiredDays=${Math.abs(daysLeft)}`);
+      } else if (daysLeft <= 7) {
+        summary.sevenDay += 1;
+        if (daysLeft <= 3) summary.threeDay += 1;
+        if (daysLeft <= 1) summary.oneDay += 1;
+        this.logger.warn(`[EXPIRY_ALERT] shop=${shopId} item=${batch.item_id} batch=${batch.batch_number} qty=${qty} ${batch.item.unit} value=${value.toFixed(2)} daysLeft=${daysLeft}`);
       }
     }
 
-    this.logger.log(
-      `Expiry sweep done — expired events: ${expiredCount}, alerts: ${alertCount}`,
-    );
+    // Refresh each affected item's next expiry from actual open batches.
+    for (const itemId of touchedItems) {
+      const next = await this.prisma.inventoryBatch.findFirst({
+        where: { shop_id: shopId, item_id: itemId, qty_remaining: { gt: 0 }, expiry_date: { not: null, gte: todayStart } },
+        orderBy: [{ expiry_date: 'asc' }, { received_at: 'asc' }, { id: 'asc' }],
+        select: { expiry_date: true },
+      });
+      const days = next?.expiry_date ? Math.floor((this.shopLocalDayStart(next.expiry_date).getTime() - todayStart.getTime()) / 86400000) : null;
+      await this.prisma.inventoryProjection.updateMany({
+        where: { shop_id: shopId, item_id: itemId },
+        data: { next_expiry_date: next?.expiry_date ?? null, days_to_expiry_min: days },
+      });
+    }
 
-    return {
-      processed: candidates.length,
-      expired: expiredCount,
-      alerts: alertCount,
-    };
+    this.logger.log(`Batch expiry sweep shop=${shopId}: ${JSON.stringify(summary)}; no stock was written off`);
+    return summary;
+  }
+
+  private shopLocalDayStart(date: Date): Date {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value;
+    return new Date(Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day'))) - 3 * 60 * 60 * 1000);
   }
 }

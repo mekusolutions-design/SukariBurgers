@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 
@@ -13,10 +13,10 @@ export class JobsSchedulerService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    this.logger.log('Jobs scheduler ready (daily expiry at 02:00)');
+    this.logger.log('Jobs scheduler ready (batch expiry monitoring at 00:10 Africa/Nairobi)');
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  @Cron('0 10 0 * * *', { timeZone: 'Africa/Nairobi' })
   async enqueueExpirySweep() {
     this.logger.log('Enqueueing expiry-sweep job…');
     await this.expiryQueue.add(

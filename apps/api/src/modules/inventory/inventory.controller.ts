@@ -98,6 +98,13 @@ export class InventoryController {
     return this.inventoryService.getSummary(scopedShop);
   }
 
+  @Get('expiry-alerts')
+  @Roles('MANAGER', 'KITCHEN', 'ADMIN')
+  @ApiOperation({ summary: 'Batch-level expiry alerts for expired and 1/3/7-day windows' })
+  async expiryAlerts(@CurrentShop() scopedShop: string) {
+    return this.inventoryService.getExpiryAlerts(scopedShop);
+  }
+
   @Get('alerts')
   @Roles('MANAGER', 'KITCHEN', 'POS', 'ADMIN')
   @ApiOperation({ summary: 'Low stock and near-expiry items' })
@@ -118,24 +125,27 @@ export class InventoryController {
     return { success: true, items: [...INVENTORY_CATEGORIES] };
   }
 
-  /** Shop-scoped suggestions for receiving and recipe pickers. */
-  @Get('suggest')
-  @Roles('MANAGER', 'KITCHEN', 'POS', 'ADMIN')
-  @ApiOperation({ summary: 'Suggest existing inventory items' })
-  @ApiQuery({ name: 'q', required: false })
-  @ApiQuery({ name: 'limit', required: false })
-  async suggest(
+  @Get(':itemId/movements')
+  @Roles('MANAGER', 'ADMIN', 'KITCHEN')
+  @ApiOperation({ summary: 'Read append-only stock movement history for an item' })
+  async getMovements(
     @CurrentShop() scopedShop: string,
-    @Query('q') q?: string,
+    @Param('itemId') itemId: string,
     @Query('limit') limit?: string,
   ) {
-    const parsedLimit = limit ? Number.parseInt(limit, 10) : undefined;
-    return this.inventoryService.suggest({
-      shopId: scopedShop,
-      q,
-      limit: parsedLimit !== undefined && Number.isFinite(parsedLimit) ? parsedLimit : undefined,
-    });
+    return this.inventoryService.getMovements(itemId, scopedShop, limit ? Number(limit) : 100);
   }
+
+  @Get(':itemId/batches')
+  @Roles('MANAGER', 'KITCHEN', 'POS', 'ADMIN')
+  @ApiOperation({ summary: 'List remaining stock batches for an item' })
+  async getBatches(
+    @CurrentShop() scopedShop: string,
+    @Param('itemId') itemId: string,
+  ) {
+    return this.inventoryService.getBatches(itemId, scopedShop);
+  }
+
   @Get(':itemId')
   @Roles('MANAGER', 'KITCHEN', 'POS', 'ADMIN')
   @ApiOperation({ summary: 'Get stock for one item' })
