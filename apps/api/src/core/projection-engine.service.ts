@@ -335,18 +335,32 @@ export class ProjectionEngineService {
         create: { shop_id: shopId, item_id: itemId, available_stock: 0, total_value: 0, expired_stock: 0, damaged_stock: 0 },
       });
 
-      const productionId = asString(payload.production_id ?? payload.productionId ?? event.id);
+      // Prisma requires non-optional string keys; fall back to event.id (always present).
+      const productionId =
+        asString(payload.production_id ?? payload.productionId) ?? event.id;
       for (const slice of consumed.slices) {
         await this.activeDb.productionInput.upsert({
-          where: { production_id_input_batch_id_input_item_id: { production_id: productionId, input_batch_id: slice.batchId, input_item_id: itemId } },
-          update: { qty_used: { increment: slice.quantity }, unit_cost: slice.unitCost, production_event_id: event.id },
+          where: {
+            production_id_input_batch_id_input_item_id: {
+              production_id: productionId,
+              input_batch_id: slice.batchId,
+              input_item_id: itemId,
+            },
+          },
+          update: {
+            qty_used: { increment: slice.quantity },
+            unit_cost: slice.unitCost,
+            production_event_id: event.id,
+          },
           create: {
             shop_id: shopId,
             production_id: productionId,
             production_event_id: event.id,
             input_batch_id: slice.batchId,
             input_item_id: itemId,
-            output_item_id: asString(payload.item_id ?? payload.itemId ?? event.item_id) || null,
+            output_item_id:
+              asString(payload.item_id ?? payload.itemId ?? event.item_id) ||
+              null,
             qty_used: slice.quantity,
             unit_cost: slice.unitCost,
           },
