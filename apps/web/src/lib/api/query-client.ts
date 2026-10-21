@@ -4,7 +4,7 @@ import { ApiError, toApiError } from "./errors";
 function shouldRetry(failureCount: number, error: unknown) {
   const apiError = error instanceof ApiError ? error : toApiError(error);
   // Don't burn retries on errors a retry can't fix.
-  if ([400, 401, 403, 404, 409, 422].includes(apiError.statusCode)) return false;
+  if ([400, 401, 403, 404, 409, 422, 429].includes(apiError.statusCode)) return false;
   return failureCount < 2;
 }
 
