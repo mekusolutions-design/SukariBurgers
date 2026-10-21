@@ -47,7 +47,7 @@ const enableJobs = process.env.ENABLE_JOBS === 'true';
       {
         name: 'default',
         ttl: 60_000,
-        limit: 300,
+        limit: 600,
       },
       {
         name: 'auth',
