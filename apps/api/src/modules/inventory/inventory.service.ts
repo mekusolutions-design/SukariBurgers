@@ -323,8 +323,15 @@ export class InventoryService {
   async getBatches(itemId: string, shopId: string = '1') {
     const item = await this.prisma.item.findUnique({ where: { item_id: itemId }, select: { item_id: true, unit: true, name: true } });
     if (!item) return { success: true, item_id: itemId, unit: 'pcs', batches: [] };
+    // Brief R3: Inventory shows usable batches only (remaining > 0, not past expiry).
+    const todayStart = this.shopLocalDayStart(new Date());
     const batches = await this.prisma.inventoryBatch.findMany({
-      where: { shop_id: shopId, item_id: itemId },
+      where: {
+        shop_id: shopId,
+        item_id: itemId,
+        qty_remaining: { gt: 0 },
+        OR: [{ expiry_date: null }, { expiry_date: { gte: todayStart } }],
+      },
       orderBy: [{ expiry_date: 'asc' }, { received_at: 'asc' }, { id: 'asc' }],
       select: { id: true, batch_number: true, item_id: true, qty_received: true, qty_remaining: true, unit_cost: true, expiry_date: true, received_at: true, supplier_id: true },
     });

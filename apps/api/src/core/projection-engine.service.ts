@@ -653,12 +653,17 @@ export class ProjectionEngineService {
     await this.emitStock(itemId, shopId, row, asString(payload.item_name));
   }
 
+  /**
+   * Waste / write-off: drain batch qty_remaining (named batch or FEFO), then set
+   * InventoryProjection Available/Value from usable batches only (brief R1/R4).
+   * Never decrement projection without touching batches (Sukari post-write-off drift).
+   */
   private async handleWaste(
     payload: BasePayload,
     shopId: string,
     event: Pick<
       ProjectionEvent,
-      'item_id' | 'quantity' | 'total_cost' | 'waste_reason'
+      'id' | 'item_id' | 'quantity' | 'total_cost' | 'waste_reason'
     >,
   ): Promise<void> {
     const itemId = event.item_id || asString(payload.item_id);
@@ -687,13 +692,70 @@ export class ProjectionEngineService {
       reason.includes('expir') ||
       reason.includes('reject');
 
-    const existing = await this.activeDb.inventoryProjection.findUnique({
-      where: {
-        shop_id_item_id: { shop_id: shopId, item_id: itemId },
-      },
-    });
-    const prev = Number(existing?.available_stock ?? 0);
-    const nextStock = Math.max(0, prev - quantity);
+    const batchId =
+      asString(payload.batch_id) ||
+      asString(payload.expiry_writeoff_batch_id) ||
+      asString((payload as { batchId?: string }).batchId);
+
+    let drainedQty = 0;
+    let drainedValue = 0;
+    const eventId = asString((event as { id?: string }).id) || batchId || `${itemId}-${Date.now()}`;
+
+    try {
+      if (batchId) {
+        const batch = await this.activeDb.inventoryBatch.findFirst({
+          where: { id: batchId, shop_id: shopId, item_id: itemId },
+        });
+        if (batch) {
+          const have = Math.max(0, Number(batch.qty_remaining));
+          const take = Math.min(have, quantity);
+          const unitCost = Number(batch.unit_cost ?? 0);
+          if (take > 0) {
+            await this.activeDb.inventoryBatch.update({
+              where: { id: batch.id },
+              data: { qty_remaining: Math.max(0, have - take) },
+            });
+            try {
+              await this.activeDb.inventoryMovement.create({
+                data: {
+                  shop_id: shopId,
+                  batch_id: batch.id,
+                  item_id: itemId,
+                  movement_type: 'WASTE',
+                  quantity: -take,
+                  unit_cost: batch.unit_cost,
+                  reference_type: isExpiry ? 'expiry_writeoff' : 'waste',
+                  reference_id: batchId,
+                  idempotency_key: `waste:${eventId}:${batch.id}`,
+                },
+              });
+            } catch {
+              /* replay / unique idempotency */
+            }
+            drainedQty = take;
+            drainedValue = take * unitCost;
+          }
+        }
+      } else {
+        const consumed = await this.fefoStock.consumeStock(shopId, itemId, quantity, {
+          allowPartial: true,
+          referenceType: isExpiry ? 'expiry_writeoff' : 'waste',
+          referenceId: eventId,
+          movementType: 'WASTE',
+        });
+        drainedQty = consumed.quantity;
+        drainedValue = consumed.value;
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Waste batch drain failed for ${itemId}; will still recompute from batches: ${message}`,
+      );
+    }
+
+    const totals = await this.sumUsableBatches(shopId, itemId);
+    const nextStock = totals.qty;
+    const nextValue = totals.value;
 
     const row = await this.activeDb.inventoryProjection.upsert({
       where: {
@@ -701,80 +763,91 @@ export class ProjectionEngineService {
       },
       update: {
         available_stock: nextStock,
-        ...(isDamage ? { damaged_stock: { increment: quantity } } : {}),
-        ...(isExpiry ? { expired_stock: { increment: quantity } } : {}),
-        total_value: { decrement: totalValue },
+        total_value: nextValue,
+        ...(isDamage && drainedQty > 0
+          ? { damaged_stock: { increment: drainedQty } }
+          : {}),
+        ...(isExpiry && drainedQty > 0
+          ? { expired_stock: { increment: drainedQty } }
+          : {}),
       },
       create: {
         shop_id: shopId,
         item_id: itemId,
-        available_stock: 0,
-        damaged_stock: isDamage ? quantity : 0,
-        expired_stock: isExpiry ? quantity : 0,
-        total_value: 0,
+        available_stock: nextStock,
+        damaged_stock: isDamage ? drainedQty : 0,
+        expired_stock: isExpiry ? drainedQty : 0,
+        total_value: nextValue,
       },
     });
+
+    const wasteQty = drainedQty > 0 ? drainedQty : quantity;
+    const wasteVal = drainedValue > 0 ? drainedValue : Math.max(0, totalValue);
 
     await this.upsertWasteProjection(
       shopId,
       itemId,
-      quantity,
-      totalValue,
+      wasteQty,
+      wasteVal,
       reason,
     );
     await this.emitStock(itemId, shopId, row, asString(payload.item_name));
   }
 
+  /** Usable = remaining > 0 and expiry not past (shop-local calendar day). Brief R2. */
+  private async sumUsableBatches(
+    shopId: string,
+    itemId: string,
+  ): Promise<{ qty: number; value: number }> {
+    const todayStart = this.projectionShopLocalDayStart(new Date());
+    const batches = await this.activeDb.inventoryBatch.findMany({
+      where: {
+        shop_id: shopId,
+        item_id: itemId,
+        qty_remaining: { gt: 0 },
+        OR: [{ expiry_date: null }, { expiry_date: { gte: todayStart } }],
+      },
+      select: { qty_remaining: true, unit_cost: true },
+    });
+    let qty = 0;
+    let value = 0;
+    for (const b of batches) {
+      const q = Math.max(0, Number(b.qty_remaining));
+      const c = Number(b.unit_cost ?? 0);
+      qty += q;
+      value += q * c;
+    }
+    return { qty, value: Math.max(0, value) };
+  }
+
+  private projectionShopLocalDayStart(now: Date): Date {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const day = fmt.format(now);
+    return new Date(`${day}T00:00:00.000+03:00`);
+  }
+
   private async handleBatchExpired(
     payload: BasePayload,
     shopId: string,
-    event: Pick<ProjectionEvent, 'item_id' | 'quantity' | 'total_cost'>,
+    event: Pick<ProjectionEvent, 'id' | 'item_id' | 'quantity' | 'total_cost'>,
   ): Promise<void> {
-    const itemId = event.item_id || asString(payload.item_id);
-    const quantity = Math.abs(asNumber(event.quantity ?? payload.quantity));
-    const totalValue = asNumber(event.total_cost ?? payload.total_cost);
-
-    if (!itemId || quantity <= 0) return;
-
-    await this.ensureItemExists(itemId, payload);
-
-    const existing = await this.activeDb.inventoryProjection.findUnique({
-      where: {
-        shop_id_item_id: { shop_id: shopId, item_id: itemId },
-      },
-    });
-    const prev = Number(existing?.available_stock ?? 0);
-    const nextStock = Math.max(0, prev - quantity);
-
-    const row = await this.activeDb.inventoryProjection.upsert({
-      where: {
-        shop_id_item_id: { shop_id: shopId, item_id: itemId },
-      },
-      update: {
-        available_stock: nextStock,
-        expired_stock: { increment: quantity },
-        total_value: { decrement: totalValue },
-        days_to_expiry_min: 0,
-      },
-      create: {
-        shop_id: shopId,
-        item_id: itemId,
-        available_stock: 0,
-        expired_stock: quantity,
-        damaged_stock: 0,
-        total_value: 0,
-        days_to_expiry_min: 0,
-      },
-    });
-
-    await this.upsertWasteProjection(
+    // Same contract as handleWaste: drain batches then recompute projection from usable sum.
+    await this.handleWaste(
+      { ...payload, waste_reason: 'expired', reason: 'expired' },
       shopId,
-      itemId,
-      quantity,
-      totalValue,
-      'expired',
+      {
+        id: (event as { id?: string }).id,
+        item_id: event.item_id,
+        quantity: event.quantity,
+        total_cost: event.total_cost,
+        waste_reason: 'expired',
+      },
     );
-    await this.emitStock(itemId, shopId, row, asString(payload.item_name));
   }
 
   private async handleAdjustment(
