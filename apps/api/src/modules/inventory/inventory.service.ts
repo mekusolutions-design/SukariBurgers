@@ -270,6 +270,9 @@ export class InventoryService {
 
     let items = rows.map((s) => this.mapStockRow(s));
 
+    // Brief R1/R2: Available + Value from usable batches (not stale projection after write-off).
+    items = await this.enrichStockFromUsableBatches(shopId, items);
+
     if (!askingFinished) {
       items = items.filter((row) => !this.isFinishedCategory(row.category));
     }
@@ -314,6 +317,103 @@ export class InventoryService {
     };
   }
 
+
+  /**
+   * Available + Value from usable batches (remaining > 0, not past expiry).
+   * Heals drifted InventoryProjection rows (post write-off negatives / zeros).
+   */
+  private async enrichStockFromUsableBatches(
+    shopId: string,
+    items: StockRow[],
+  ): Promise<StockRow[]> {
+    if (!items.length) return items;
+    const todayStart = this.shopLocalDayStart(new Date());
+    const itemIds = items.map((i) => i.item_id);
+    const batches = await this.prisma.inventoryBatch.findMany({
+      where: {
+        shop_id: shopId,
+        item_id: { in: itemIds },
+        qty_remaining: { gt: 0 },
+        OR: [{ expiry_date: null }, { expiry_date: { gte: todayStart } }],
+      },
+      select: {
+        item_id: true,
+        qty_remaining: true,
+        unit_cost: true,
+        expiry_date: true,
+      },
+    });
+
+    type Sum = { qty: number; value: number; nextExpiry: Date | null };
+    const sums = new Map<string, Sum>();
+    for (const b of batches) {
+      const q = Math.max(0, Number(b.qty_remaining));
+      const c = Number(b.unit_cost ?? 0);
+      const cur = sums.get(b.item_id) ?? { qty: 0, value: 0, nextExpiry: null };
+      cur.qty += q;
+      cur.value += q * c;
+      if (b.expiry_date && (!cur.nextExpiry || b.expiry_date < cur.nextExpiry)) {
+        cur.nextExpiry = b.expiry_date;
+      }
+      sums.set(b.item_id, cur);
+    }
+
+    const healed: Array<{ item_id: string; qty: number; value: number }> = [];
+
+    const out = items.map((row) => {
+      const sum = sums.get(row.item_id) ?? { qty: 0, value: 0, nextExpiry: null };
+      const qty = sum.qty;
+      const value = Math.max(0, sum.value);
+      const storedQty = Number(row.available_stock ?? 0);
+      const storedVal = Number(row.total_value ?? 0);
+      if (
+        Math.abs(storedQty - qty) > 1e-6 ||
+        storedVal < -0.005 ||
+        Math.abs(storedVal - value) > 0.05
+      ) {
+        healed.push({ item_id: row.item_id, qty, value });
+      }
+      const avg =
+        qty > 0 && value > 0
+          ? Math.round((value / qty) * 1e6) / 1e6
+          : Number(row.avg_unit_cost ?? 0);
+      const days =
+        sum.nextExpiry != null
+          ? this.computeDaysToExpiry(sum.nextExpiry)
+          : qty > 0
+            ? row.days_to_expiry_min
+            : null;
+      return {
+        ...row,
+        available_stock: qty,
+        total_value: value,
+        avg_unit_cost: avg,
+        days_to_expiry_min: days,
+        next_expiry_date: sum.nextExpiry ?? row.next_expiry_date,
+      };
+    });
+
+    if (healed.length) {
+      void Promise.all(
+        healed.map((h) =>
+          this.prisma.inventoryProjection
+            .update({
+              where: {
+                shop_id_item_id: { shop_id: shopId, item_id: h.item_id },
+              },
+              data: {
+                available_stock: h.qty,
+                total_value: h.value,
+              },
+            })
+            .catch(() => undefined),
+        ),
+      );
+    }
+
+    return out;
+  }
+
   private shopLocalDayStart(now: Date): Date {
     const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
     const get = (type: string) => parts.find((part) => part.type === type)?.value;
@@ -323,7 +423,6 @@ export class InventoryService {
   async getBatches(itemId: string, shopId: string = '1') {
     const item = await this.prisma.item.findUnique({ where: { item_id: itemId }, select: { item_id: true, unit: true, name: true } });
     if (!item) return { success: true, item_id: itemId, unit: 'pcs', batches: [] };
-    // Brief R3: Inventory shows usable batches only (remaining > 0, not past expiry).
     const todayStart = this.shopLocalDayStart(new Date());
     const batches = await this.prisma.inventoryBatch.findMany({
       where: {
@@ -386,7 +485,10 @@ export class InventoryService {
         },
       },
     });
-    return row ? this.mapStockRow(row) : null;
+    if (!row) return null;
+    const mapped = this.mapStockRow(row);
+    const [enriched] = await this.enrichStockFromUsableBatches(shopId, [mapped]);
+    return enriched;
   }
 
   async getAlerts(shopId: string = '1'): Promise<StockAlert[]> {
