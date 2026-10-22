@@ -699,7 +699,11 @@ export class ProjectionEngineService {
 
     let drainedQty = 0;
     let drainedValue = 0;
-    const eventId = asString((event as { id?: string }).id) || batchId || `${itemId}-${Date.now()}`;
+    const eventId =
+      asString(event.id) ||
+      batchId ||
+      asString(itemId) ||
+      `waste-${Date.now()}`;
 
     try {
       if (batchId) {
@@ -836,12 +840,16 @@ export class ProjectionEngineService {
     shopId: string,
     event: Pick<ProjectionEvent, 'id' | 'item_id' | 'quantity' | 'total_cost'>,
   ): Promise<void> {
-    // Same contract as handleWaste: drain batches then recompute projection from usable sum.
     await this.handleWaste(
       { ...payload, waste_reason: 'expired', reason: 'expired' },
       shopId,
       {
-        id: (event as { id?: string }).id,
+        id:
+          asString(event.id) ||
+          asString(payload.batch_id) ||
+          asString(payload.item_id) ||
+          asString(event.item_id) ||
+          'batch-expired',
         item_id: event.item_id,
         quantity: event.quantity,
         total_cost: event.total_cost,

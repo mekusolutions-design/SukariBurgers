@@ -1,10 +1,8 @@
 /**
  * One-shot: set InventoryProjection.available_stock + total_value from usable batches.
  *
- *   APPLY=1 npx ts-node scripts/reconcile-available-from-batches.ts
+ *   npx ts-node scripts/reconcile-available-from-batches.ts
  *   SHOP_ID=1 APPLY=1 npx ts-node scripts/reconcile-available-from-batches.ts
- *
- * Without APPLY=1: read-only report only.
  */
 import { PrismaClient } from '@prisma/client';
 
