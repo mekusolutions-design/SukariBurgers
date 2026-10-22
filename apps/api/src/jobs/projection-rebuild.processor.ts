@@ -19,39 +19,15 @@ export class ProjectionRebuildProcessor {
   async handleRebuildAll(job: Job<{ shopId?: string }>) {
     const { shopId = '1' } = job.data || {};
 
-    this.logger.log(`Full projection rebuild for shop ${shopId}`);
-
-    try {
-      await this.prisma.inventoryProjection.deleteMany({
-        where: { shop_id: shopId },
-      });
-      await this.prisma.wasteProjection.deleteMany({
-        where: { shop_id: shopId },
-      });
-      await this.prisma.salesProjection.deleteMany({
-        where: { shop_id: shopId },
-      });
-
-      const events = await this.prisma.event.findMany({
-        where: { shop_id: shopId },
-        orderBy: { created_at: 'asc' },
-      });
-
-      if (events.length === 0) {
-        this.logger.log('No events — nothing to rebuild');
-        return;
-      }
-
-      this.logger.log(`Replaying ${events.length} events`);
-
-      for (const event of events) {
-        await this.projectionEngine.updateProjections(event);
-      }
-
-      this.logger.log(`Rebuild complete (${events.length} events)`);
-    } catch (error) {
-      this.logger.error('Projection rebuild failed', error);
-      throw error;
-    }
+    // SAFETY: updateProjections replays events through handlers that can consume
+    // physical FEFO batches. A full replay is therefore not projection-only.
+    // Refuse before deleting projections or reading/replaying events; otherwise a
+    // queued rebuild can consume stock a second time or leave projections partial.
+    const message =
+      'Full projection rebuild is disabled until stock mutations are separated from projection replay.';
+    this.logger.error(
+      `Projection rebuild refused for shop ${shopId}: replay may mutate physical stock. No data was changed by this job.`,
+    );
+    throw new Error(message);
   }
 }
