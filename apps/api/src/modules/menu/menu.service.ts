@@ -11,6 +11,7 @@ import { IdempotencyService } from '../../core/idempotency.service';
 import { MenuGateway } from './menu.gateway';
 import type { CreateMenuDto } from './dto/create-menu.dto';
 import type { MenuItemDto } from './dto/menu-item.dto';
+import { FefoStockService } from '../../core/fefo-stock.service';
 
 interface IdempotencyResult {
   isReplay: boolean;
@@ -247,13 +248,21 @@ export class MenuService {
     const cached = this.listMenusCache.get(shopId);
     if (!cached) return;
 
+    // Prefer usable-batch sum so menu maxPortions matches Inventory Available
+    const batchMap = await this.fefoStock.getUsableStockByItemMap(shopId);
+    const avail = new Map<string, number>(
+      [...batchMap.entries()].map(([id, v]) => [id, v.qty]),
+    );
+    // Fill gaps from projection only when no batch rows exist (legacy)
     const rows = await this.prisma.inventoryProjection.findMany({
       where: { shop_id: shopId },
       select: { item_id: true, available_stock: true },
     });
-    const avail = new Map(
-      rows.map((r) => [r.item_id, Number(r.available_stock ?? 0)]),
-    );
+    for (const r of rows) {
+      if (!avail.has(r.item_id)) {
+        avail.set(r.item_id, Math.max(0, Number(r.available_stock ?? 0)));
+      }
+    }
 
     for (const item of cached.data.items) {
       const lines = item.lines ?? [];
@@ -304,6 +313,7 @@ export class MenuService {
     private readonly idempotencyService: IdempotencyService,
     private readonly menuGateway: MenuGateway,
     private readonly prisma: PrismaService,
+    private readonly fefoStock: FefoStockService,
   ) {}
 
   // ── Finished goods (FIXED picker only) ─────────────────
@@ -665,8 +675,20 @@ export class MenuService {
 
     }
 
-    // Preload all shop stock once (avoids N+1 inventoryProjection queries)
+    // Preload usable-batch stock once (aligned with Inventory Available / FEFO)
     const stockCache = new Map<string, StockSnapshot>();
+    const batchMap = await this.fefoStock.getUsableStockByItemMap(shopId);
+    for (const [itemId, v] of batchMap) {
+      const available = Math.max(0, v.qty);
+      const value = Math.max(0, v.value);
+      const unitCost =
+        available > 0 && value > 0 ? value / available : 0;
+      stockCache.set(itemId, {
+        available,
+        unitCost: Number.isFinite(unitCost) ? unitCost : 0,
+      });
+    }
+    // Legacy projection-only items (no batches yet)
     const allStock = await this.prisma.inventoryProjection.findMany({
       where: { shop_id: shopId },
       select: {
@@ -676,8 +698,9 @@ export class MenuService {
       },
     });
     for (const row of allStock) {
-      const available = Number(row.available_stock ?? 0);
-      const value = Number(row.total_value ?? 0);
+      if (stockCache.has(row.item_id)) continue;
+      const available = Math.max(0, Number(row.available_stock ?? 0));
+      const value = Math.max(0, Number(row.total_value ?? 0));
       const unitCost =
         available > 0 && value > 0 ? value / available : 0;
       stockCache.set(row.item_id, {

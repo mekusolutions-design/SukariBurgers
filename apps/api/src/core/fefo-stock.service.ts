@@ -396,4 +396,33 @@ export class FefoStockService {
       `Seeded synthetic FEFO lot for ${itemId} qty=${stock} shop=${shopId}`,
     );
   }
+
+  /**
+   * Shop-wide usable stock map: remaining > 0 and not past shop-local expiry.
+   * Single source for Inventory list, menu maxPortions, POS-facing Nest paths.
+   */
+  async getUsableStockByItemMap(
+    shopId: string,
+  ): Promise<Map<string, { qty: number; value: number }>> {
+    const shop = shopId || '1';
+    const todayStart = this.shopLocalDayStart(new Date());
+    const batches = await this.prisma.inventoryBatch.findMany({
+      where: {
+        shop_id: shop,
+        qty_remaining: { gt: 0 },
+        OR: [{ expiry_date: null }, { expiry_date: { gte: todayStart } }],
+      },
+      select: { item_id: true, qty_remaining: true, unit_cost: true },
+    });
+    const map = new Map<string, { qty: number; value: number }>();
+    for (const b of batches) {
+      const q = Math.max(0, Number(b.qty_remaining));
+      const c = Number(b.unit_cost ?? 0);
+      const cur = map.get(b.item_id) ?? { qty: 0, value: 0 };
+      cur.qty += q;
+      cur.value += q * c;
+      map.set(b.item_id, cur);
+    }
+    return map;
+  }
 }
