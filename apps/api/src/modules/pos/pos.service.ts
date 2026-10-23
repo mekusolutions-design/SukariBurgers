@@ -1204,7 +1204,8 @@ export class PosService {
         isAvailable,
         isLow,
         maxPortions,
-        availableQuantity: Number(m.availableQuantity ?? 0),
+        // Always expose sellable portions (not raw FG units) for POS UI
+        availableQuantity: maxPortions,
         finishedGoodId: m.finishedGoodId,
         requiresSelection: m.requiresSelection,
         lines: m.lines,

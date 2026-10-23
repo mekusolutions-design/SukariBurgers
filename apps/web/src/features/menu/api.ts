@@ -66,6 +66,10 @@ function toLine(raw: Record<string, unknown>, idx: number): MenuComponentLine {
     componentType: type,
     finishedGoodId: (raw.finishedGoodId ??
       raw.finished_good_id ??
+      raw.inventoryItemId ??
+      raw.inventory_item_id ??
+      raw.stockItemId ??
+      raw.stock_item_id ??
       null) as string | null,
     finishedGoodName: (raw.finishedGoodName ??
       raw.finished_good_name ??

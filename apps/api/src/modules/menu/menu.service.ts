@@ -189,10 +189,17 @@ function normalizeLines(dto: CreateMenuDto): NormalizedLine[] {
       const maxSelect =
         line.max_select ?? (type === 'CHOICE' ? 1 : isChoice ? qty : 1);
 
+      // FIXED + INVENTORY both persist the SKU on finished_good_id.
+      // Accept inventory_item_id as an alias so POS/catalog pickers stay consistent.
+      const resolvedFgId =
+        (typeof fgId === 'string' && fgId.trim()) ||
+        (typeof line.finished_good_id === 'string' && line.finished_good_id.trim()) ||
+        undefined;
+
       return {
         component_key: line.component_key?.trim() || `line_${idx + 1}`,
         component_type: type,
-        finished_good_id: line.finished_good_id?.trim(),
+        finished_good_id: resolvedFgId,
         finished_good_name: line.finished_good_name,
         finished_good_category_id: line.finished_good_category_id?.trim(),
         finished_good_category_code: line.finished_good_category_code?.trim(),
@@ -276,7 +283,11 @@ export class MenuService {
       }
       let minP = Infinity;
       for (const line of lines) {
-        if (line.componentType === 'FIXED' && line.finishedGoodId) {
+        if (
+          (line.componentType === 'FIXED' ||
+            line.componentType === 'INVENTORY') &&
+          line.finishedGoodId
+        ) {
           const a = avail.get(line.finishedGoodId) ?? 0;
           const need = Math.max(line.quantityRequired || 1, 0.0001);
           const mp = Math.max(0, Math.floor(a / need));
@@ -301,8 +312,9 @@ export class MenuService {
       }
       if (minP !== Infinity) {
         item.maxPortions = Math.max(0, minP);
+        // Portions, not raw stock — keep POS bootstrap / chips consistent
         item.availableQuantity = item.maxPortions;
-        item.isAvailable = item.maxPortions > 0;
+        item.isAvailable = item.maxPortions > 0 && item.isAvailable !== false;
       }
     }
     this.listMenusCache.set(shopId, { at: Date.now(), data: cached.data });
@@ -849,16 +861,23 @@ export class MenuService {
       (item as MenuListItem & { costMissing: boolean }).costMissing =
         lines.length > 0 && (foodCost <= 0 || anyLineNeedsCost);
 
-      const firstFixed = lines.find((line) => line.componentType === 'FIXED');
-      if (firstFixed) {
-        item.finishedGoodId = firstFixed.finishedGoodId;
-        item.finishedGoodName = firstFixed.finishedGoodName;
-        item.quantityRequired = firstFixed.quantityRequired;
-        item.unit = firstFixed.unit;
-        item.availableQuantity = firstFixed.availableStock;
-      } else {
-        item.availableQuantity = item.maxPortions;
+      // Prefer first FIXED line for display FG metadata; fall back to INVENTORY.
+      const firstStocked = lines.find(
+        (line) =>
+          (line.componentType === 'FIXED' || line.componentType === 'INVENTORY') &&
+          line.finishedGoodId,
+      );
+      if (firstStocked) {
+        item.finishedGoodId = firstStocked.finishedGoodId;
+        item.finishedGoodName = firstStocked.finishedGoodName;
+        item.quantityRequired = firstStocked.quantityRequired;
+        item.unit = firstStocked.unit;
       }
+      // availableQuantity must be sellable *portions* (same unit as maxPortions),
+      // not raw inventory units — POS chips/overlays treat them interchangeably.
+      item.availableQuantity = item.maxPortions;
+      item.isAvailable =
+        item.maxPortions > 0 && item.isAvailable !== false;
     }
 
     items.sort((a, b) => a.name.localeCompare(b.name));
@@ -1379,11 +1398,22 @@ export class MenuService {
       }
     }
 
+    // FIXED / INVENTORY stock key — accept historical aliases so listMenus
+    // can resolve availability after catalog/picker field renames.
+    const finishedGoodId =
+      asString(
+        row.finished_good_id ??
+          row.finishedGoodId ??
+          row.inventory_item_id ??
+          row.inventoryItemId ??
+          row.stock_item_id ??
+          row.stockItemId,
+      ) || null;
+
     return {
       componentKey: key,
       componentType: type,
-      finishedGoodId:
-        asString(row.finished_good_id ?? row.finishedGoodId) || null,
+      finishedGoodId,
       finishedGoodName:
         asString(row.finished_good_name ?? row.finishedGoodName) || null,
       finishedGoodCategoryId:
