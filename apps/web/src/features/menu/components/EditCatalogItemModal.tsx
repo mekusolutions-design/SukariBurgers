@@ -71,6 +71,18 @@ type SkuSuggestion = {
   availableStock: number;
 };
 
+function stableComponentKey(
+  kind: string,
+  itemId: string,
+  index: number,
+): string {
+  const id = itemId.split(",")[0]?.trim() || "";
+  if (id && kind === "FIXED") return `fixed-${id}`;
+  if (id && kind === "INVENTORY") return `inv-${id}`;
+  if (id && kind === "CHOICE") return `choice-${id.split(",").filter(Boolean).join("-").slice(0, 48)}`;
+  return `comp-${index}`;
+}
+
 function linesFromMenu(menu?: MenuItem | null): DraftLine[] {
   if (!menu?.lines?.length) {
     return [
@@ -218,11 +230,11 @@ export function EditCatalogItemModal({
     );
   }
 
-  function addLine(kind: "FIXED" | "INVENTORY" | "CHOICE" = "INVENTORY") {
+  function addLine(kind: "FIXED" | "INVENTORY" | "CHOICE" = "FIXED") {
     setLines((prev) => [
       ...prev,
       {
-        key: `line-${Date.now()}`,
+        key: `draft-${kind}-${Date.now()}`,
         componentType: kind,
         itemId: "",
         itemName: "",
@@ -277,20 +289,40 @@ export function EditCatalogItemModal({
               .split(",")
               .map((x) => x.trim())
               .filter(Boolean);
+            if (ids.length === 0) {
+              throw new Error(
+                "Each Inventory select needs at least one stock item",
+              );
+            }
+            if (ids.length === 1) {
+              return {
+                component_key: stableComponentKey("FIXED", ids[0], i),
+                component_type: "FIXED",
+                finished_good_id: ids[0],
+                finished_good_name: l.itemName.trim() || undefined,
+                quantity_required: qty,
+                unit: l.unit || "pcs",
+              };
+            }
             return {
-              component_key: l.key || `c${i}`,
+              component_key: stableComponentKey("CHOICE", ids.join(","), i),
               component_type: "CHOICE",
               option_item_ids: ids,
               quantity_required: qty,
               unit: l.unit || "pcs",
             };
           }
+          const id = l.itemId.trim();
+          if (!id) {
+            throw new Error(
+              "Each Fixed FG line needs a finished product / stock item",
+            );
+          }
           return {
-            component_key: l.key || `c${i}`,
-            component_type:
-              l.componentType === "INVENTORY" ? "INVENTORY" : "FIXED",
-            finished_good_id: l.itemId.trim(),
-            finished_good_name: l.itemName || undefined,
+            component_key: stableComponentKey("FIXED", id, i),
+            component_type: "FIXED",
+            finished_good_id: id,
+            finished_good_name: l.itemName.trim() || undefined,
             quantity_required: qty,
             unit: l.unit || "pcs",
           };
@@ -409,9 +441,17 @@ export function EditCatalogItemModal({
               type="button"
               size="sm"
               variant="secondary"
+              onClick={() => addLine("FIXED")}
+            >
+              <Plus className="h-3.5 w-3.5" /> Fixed FG
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
               onClick={() => addLine("INVENTORY")}
             >
-              <Plus className="h-3.5 w-3.5" /> Component
+              <Plus className="h-3.5 w-3.5" /> Inventory select
             </Button>
           </div>
 
@@ -419,8 +459,17 @@ export function EditCatalogItemModal({
             {lines.map((line) => (
               <div
                 key={line.key}
+                  data-kind={line.componentType}
                 className="rounded-md border border-border p-2"
               >
+                <div className="mb-1 text-[11px] font-medium text-ink-muted">
+                    {line.componentType === "FIXED"
+                      ? "Fixed FG"
+                      : line.componentType === "CHOICE"
+                        ? "Choice / multi-SKU"
+                        : "Inventory select"}
+                    {line.itemName ? ` · ${line.itemName}` : ""}
+                  </div>
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     <Input
@@ -461,6 +510,9 @@ export function EditCatalogItemModal({
                             {s.name}{" "}
                             <span className="text-xs text-ink-muted">
                               {s.itemId} · {s.unit}
+                              {Number.isFinite(s.availableStock)
+                                ? ` · in stock ${s.availableStock}`
+                                : ""}
                             </span>
                           </button>
                         ))}

@@ -710,7 +710,7 @@ export class PosService {
         const fgId = component.finishedGoodId;
         if (!fgId) {
           throw new BadRequestException(
-            `Menu ${menu.menuId}: FIXED component ${component.componentKey} has no finished_good_id`,
+            `${menu.name}: a fixed component is not linked to stock — re-link it in Menu → Adjust`,
           );
         }
         const rawQty = component.quantityRequired * soldQty;
@@ -733,9 +733,10 @@ export class PosService {
         continue;
       }
 
-      const picks = selections.filter(
+      let picks = selections.filter(
         (s) => s.component_key === component.componentKey,
       );
+      picks = this.autoSelectionsForComponent(component, soldQty, picks);
       this.validateSelections(menu, component, soldQty, picks);
 
       for (const pick of picks) {
@@ -770,6 +771,72 @@ export class PosService {
     return out;
   }
 
+  /** Human label for cashiers — never expose raw line-<timestamp> keys. */
+  private friendlyComponentLabel(component: MenuComponentLine): string {
+    if (component.finishedGoodCategoryName?.trim()) {
+      return component.finishedGoodCategoryName.trim();
+    }
+    if (component.finishedGoodName?.trim()) {
+      return component.finishedGoodName.trim();
+    }
+    const opts = component.options ?? [];
+    if (opts.length === 1 && opts[0]?.finishedGoodName?.trim()) {
+      return opts[0].finishedGoodName.trim();
+    }
+    if (opts.length > 1) {
+      return 'an option';
+    }
+    const key = (component.componentKey || '').trim();
+    if (key && !/^line-\d+$/i.test(key) && !/^c\d+$/i.test(key)) {
+      return key;
+    }
+    return 'a component';
+  }
+
+  /**
+   * INVENTORY / single-option CHOICE lines should not require a cashier pick.
+   * Auto-build selections from finishedGoodId or the sole option.
+   */
+  private autoSelectionsForComponent(
+    component: MenuComponentLine,
+    soldQty: number,
+    existing: SelectionIn[],
+  ): SelectionIn[] {
+    if (existing.length > 0) return existing;
+    const need = component.quantityRequired * soldQty;
+    if (need <= 0) return existing;
+
+    const type = String(component.componentType || '').toUpperCase();
+    if (type === 'FIXED') return existing;
+
+    const fgId = component.finishedGoodId?.trim();
+    if (fgId) {
+      return [
+        {
+          component_key: component.componentKey,
+          finished_good_id: fgId,
+          finished_good_name: component.finishedGoodName || fgId,
+          quantity: need,
+        },
+      ];
+    }
+
+    const opts = component.options ?? [];
+    if (opts.length === 1 && opts[0]?.finishedGoodId) {
+      const o = opts[0];
+      return [
+        {
+          component_key: component.componentKey,
+          finished_good_id: o.finishedGoodId,
+          finished_good_name: o.finishedGoodName || o.finishedGoodId,
+          quantity: need,
+        },
+      ];
+    }
+
+    return existing;
+  }
+
   private validateSelections(
     menu: MenuListItem,
     component: MenuComponentLine,
@@ -778,16 +845,18 @@ export class PosService {
   ): void {
     const requiredTotal = component.quantityRequired * soldQty;
     const pickedTotal = picks.reduce((s, p) => s + p.quantity, 0);
-    const label = component.finishedGoodCategoryName || component.componentKey;
+    const label = this.friendlyComponentLabel(component);
 
     if (picks.length === 0 && requiredTotal > 0) {
-      throw new BadRequestException(`${menu.name}: select ${label}`);
+      throw new BadRequestException(
+        `${menu.name}: choose ${label} before adding to the order`,
+      );
     }
 
     if (component.componentType === 'CHOICE') {
       if (pickedTotal !== requiredTotal) {
         throw new BadRequestException(
-          `${menu.name} / ${component.componentKey}: need ${requiredTotal} unit(s), got ${pickedTotal}`,
+          `${menu.name}: ${label} needs ${requiredTotal} unit(s), got ${pickedTotal}`,
         );
       }
       return;
@@ -798,13 +867,13 @@ export class PosService {
 
     if (requiredTotal > 0 && pickedTotal !== requiredTotal) {
       throw new BadRequestException(
-        `${menu.name} / ${component.componentKey}: need ${requiredTotal} selection unit(s), got ${pickedTotal}`,
+        `${menu.name}: ${label} needs ${requiredTotal} selection unit(s), got ${pickedTotal}`,
       );
     }
 
     if (maxTotal > 0 && pickedTotal > maxTotal) {
       throw new BadRequestException(
-        `${menu.name} / ${component.componentKey}: max ${maxTotal} unit(s), got ${pickedTotal}`,
+        `${menu.name}: ${label} allows at most ${maxTotal} unit(s)`,
       );
     }
 
@@ -812,7 +881,7 @@ export class PosService {
       const ids = picks.map((p) => p.finished_good_id);
       if (new Set(ids).size !== ids.length) {
         throw new BadRequestException(
-          `${menu.name} / ${component.componentKey}: duplicate picks not allowed`,
+          `${menu.name}: ${label} does not allow duplicate picks`,
         );
       }
     }
