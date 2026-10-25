@@ -378,6 +378,7 @@ export class PosService {
     });
 
     // Cheap stock refresh — do not drop menu event cache (avoids +3s on next POS open)
+    this.menuService.invalidateListMenusCache(shopId);
     void this.menuService.refreshListMenusStock(shopId).catch(() => undefined);
 
     this.logger.log(
@@ -1259,7 +1260,10 @@ export class PosService {
       })),
     ]);
 
-    const items = menuResult.items ?? [];
+    // listMenus refreshes stock on cache hit; ensure availability[] uses that pass
+    await this.menuService.refreshListMenusStock(shopId).catch(() => undefined);
+    const fresh = await this.menuService.listMenus(shopId);
+    const items = fresh.items ?? menuResult.items ?? [];
     const menus = items.filter((m) => m.isVisible !== false);
     const availability = menus.map((m) => {
       const maxPortions = Math.max(0, Math.floor(Number(m.maxPortions ?? 0)));

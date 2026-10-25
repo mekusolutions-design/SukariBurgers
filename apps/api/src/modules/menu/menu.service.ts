@@ -243,7 +243,7 @@ export class MenuService {
     string,
     { at: number; data: { success: boolean; items: MenuListItem[]; count: number } }
   >();
-  private static readonly LIST_MENUS_TTL_MS = 120_000;
+  private static readonly LIST_MENUS_TTL_MS = 30_000;
 
   invalidateListMenusCache(shopId?: string): void {
     if (shopId) this.listMenusCache.delete(shopId);
@@ -515,7 +515,10 @@ export class MenuService {
       cached &&
       Date.now() - cached.at < MenuService.LIST_MENUS_TTL_MS
     ) {
-      return cached.data;
+      // Structure is cached; stock for FIXED/INVENTORY must stay live so POS
+      // "N left" matches Inventory after receives/waste/closing stock.
+      await this.refreshListMenusStock(shopId);
+      return this.listMenusCache.get(shopId)?.data ?? cached.data;
     }
 
     const events = await this.prisma.event.findMany({
@@ -763,7 +766,31 @@ export class MenuService {
       for (const draft of lineDrafts) {
         if (draft.componentType === 'FIXED' || draft.componentType === 'INVENTORY') {
           const finishedGoodId = draft.finishedGoodId;
-          if (!finishedGoodId) continue;
+          if (!finishedGoodId) {
+            // Unlinked FIXED line must not leave minPortions at Infinity
+            minPortions = 0;
+            requiresSelection = false;
+            lines.push({
+              componentKey: draft.componentKey,
+              componentType: draft.componentType === 'INVENTORY' ? 'INVENTORY' : 'FIXED',
+              finishedGoodId: null,
+              finishedGoodName: draft.finishedGoodName,
+              finishedGoodCategoryId: null,
+              finishedGoodCategoryCode: null,
+              finishedGoodCategoryName: null,
+              options: [],
+              quantityRequired: draft.quantityRequired || 1,
+              unit: draft.unit || 'pcs',
+              availableStock: 0,
+              maxPortions: 0,
+              unitCost: 0,
+              lineCost: 0,
+              minSelect: 0,
+              maxSelect: 1,
+              allowRepeat: false,
+            } as MenuComponentLine);
+            continue;
+          }
 
           const snapshot = await getStock(finishedGoodId);
           const need = Math.max(draft.quantityRequired || 1, 0.0001);
