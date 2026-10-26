@@ -59,7 +59,7 @@ export function ClosingStockPage({ shopId }: { shopId: string }) {
         <Alert
           tone="warning"
           title="View only"
-          description="Only administrators and managers can submit closing stock. You can review expected quantities, but finalization is restricted."
+          description="Kitchen, managers, and admins can submit closing stock. You can review expected quantities, but finalization is restricted."
         />
       ) : null}
 

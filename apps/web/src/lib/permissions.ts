@@ -63,7 +63,7 @@ export function landingSectionFor(role: Role): Section {
   return "dashboard";
 }
 
-/** Only ADMIN and MANAGER may finalize/submit closing stock counts. */
+/** ADMIN, MANAGER, and KITCHEN may finalize/submit closing stock counts. */
 export function canSubmitClosingStock(role: Role | undefined | null): boolean {
-  return role === "ADMIN" || role === "MANAGER";
+  return role === "ADMIN" || role === "MANAGER" || role === "KITCHEN";
 }

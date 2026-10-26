@@ -464,8 +464,18 @@ export const kitchenApi = {
         name: String(raw.name ?? raw.itemName ?? raw.item_name ?? ""),
         unit: String(raw.unit ?? "pcs"),
         expectedQuantity: Number(
-          raw.expectedQuantity ?? raw.system_qty ?? raw.systemQty ?? 0,
+          raw.expectedQuantity ??
+            raw.expected_quantity ??
+            raw.system_qty ??
+            raw.systemQty ??
+            0,
         ),
+        daysSinceLastCount:
+          raw.days_since_last_count != null
+            ? Number(raw.days_since_last_count)
+            : raw.daysSinceLastCount != null
+              ? Number(raw.daysSinceLastCount)
+              : null,
         countedQuantity:
           raw.countedQuantity != null
             ? Number(raw.countedQuantity)
@@ -495,6 +505,8 @@ export const kitchenApi = {
           lines: submission.entries.map((e) => ({
             item_id: e.itemId,
             counted_qty: e.countedQuantity,
+            notes: (e as { notes?: string }).notes,
+            reason_code: (e as { reasonCode?: string }).reasonCode,
           })),
         },
         { timeout: 120_000 },
@@ -504,6 +516,28 @@ export const kitchenApi = {
     }
   },
 
+
+  async getDailyStockLedger(shopId: string, date?: string): Promise<Record<string, unknown>> {
+    try {
+      const { data } = await apiClient.get(
+        `${endpoints.kitchen.closingStockLedger}${buildQueryString({ shopId, date })}`,
+      );
+      return (data ?? {}) as Record<string, unknown>;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  },
+
+  async listClosingStockHistory(shopId: string): Promise<Record<string, unknown>> {
+    try {
+      const { data } = await apiClient.get(
+        `${endpoints.kitchen.closingStockHistory}${buildQueryString({ shopId })}`,
+      );
+      return (data ?? {}) as Record<string, unknown>;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  },
   async updateOrderStatus(orderId: string, status: string): Promise<void> {
     try {
       await apiClient.post(endpoints.kitchen.updateOrderStatus(orderId), {
