@@ -40,8 +40,8 @@ describe('mobile/web parity implementation contracts', () => {
     assert.match(pos, /No menu item or combo found/);
   });
 
-  it('uses existing inventory suggestions in receiving and exposes the Nest route', () => {
-    assert.match(receive, /API_ENDPOINTS\.INVENTORY_SUGGEST/);
+  it('uses the web-compatible inventory list for receiving and exposes the scoped SKU picker route', () => {
+    assert.match(receive, /API_ENDPOINTS\.GET_STOCK/);
     assert.match(receive, /applyInventorySuggestion/);
     assert.match(inventoryController, /@Get\('suggest'\)/);
     assert.match(inventoryController, /this\.inventoryService\.suggest/);

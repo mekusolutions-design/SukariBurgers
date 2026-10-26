@@ -33,7 +33,7 @@ describe('API_ENDPOINTS source contract', () => {
 
 
 describe('mobile parity endpoints', () => {
-  it('defines the inventory suggestion endpoint used by receiving', () => {
+  it('defines the inventory suggestion endpoint used by menu recipe pickers', () => {
     assert.match(endpointsSrc, /INVENTORY_SUGGEST:\s*'\/inventory\/suggest'/);
     assert.match(endpointsSrc, /MENU_CATEGORIES:\s*'\/menu\/categories'/);
   });

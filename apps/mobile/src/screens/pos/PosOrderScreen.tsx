@@ -741,7 +741,6 @@ export default function PosOrderScreen(): React.JSX.Element {
           </View>
         </View>
       </Modal>
-    </View>
       {/* CHOICE component picker — web NewOrderPanel parity */}
       <Modal
         visible={!!choiceMenu}
@@ -822,7 +821,7 @@ export default function PosOrderScreen(): React.JSX.Element {
           </View>
         </View>
       </Modal>
-
+    </View>
   );
 }
 

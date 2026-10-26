@@ -78,7 +78,7 @@ export default function RegisterScreen() {
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={typography.title}>Create Account</Text>
-        <Text style={typography.subtitle}>Join RestFlow to manage your kitchen</Text>
+        <Text style={typography.subtitle}>Join Sukari Burgers to manage your kitchen</Text>
 
         {error && <Text style={styles.errorText}>{error}</Text>}
 

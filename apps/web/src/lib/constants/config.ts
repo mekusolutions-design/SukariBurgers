@@ -1,4 +1,4 @@
-export const APP_NAME = "RestFlow";
+export const APP_NAME = "Sukari Burgers";
 
 /** Nest (or primary) API — default for almost all features */
 export const API_URL =

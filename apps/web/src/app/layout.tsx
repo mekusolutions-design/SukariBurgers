@@ -10,9 +10,12 @@ import "./globals.css";
  * CSS variables keep the same names Tailwind expects (tailwind fontFamily.sans/display/mono).
  */
 export const metadata: Metadata = {
-  title: `${APP_NAME} — Ops Console`,
+  title: {
+    default: `${APP_NAME} — Ops Console`,
+    template: `%s | ${APP_NAME}`,
+  },
   description:
-    "Inventory, kitchen, POS, waste, and consumption management for RestFlow shops.",
+    "Sukari Burgers operations console for inventory, kitchen, POS, waste, and consumption management.",
   robots: { index: false, follow: false },
 };
 

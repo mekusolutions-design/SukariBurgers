@@ -163,15 +163,21 @@ export default function MenuListScreen() {
   useEffect(() => {
     let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
+    const controllers: AbortController[] = [];
     for (const [lineKey, query] of Object.entries(lineSearches)) {
       const q = String(query).trim();
       if (q.length < 1) {
         setLineSuggestions((previous) => ({ ...previous, [lineKey]: [] }));
         continue;
       }
+      const controller = new AbortController();
+      controllers.push(controller);
       timers.push(setTimeout(async () => {
         try {
-          const response = await apiClient.get(API_ENDPOINTS.INVENTORY_SUGGEST, { params: { shopId: '1', q, limit: 8 } });
+          const response = await apiClient.get(API_ENDPOINTS.INVENTORY_SUGGEST, {
+            params: { q, limit: 8 },
+            signal: controller.signal,
+          });
           const root = (response.data ?? {}) as Record<string, unknown>;
           const rows = Array.isArray(root.items) ? root.items as Record<string, unknown>[] : [];
           const mapped = rows.map((row) => ({
@@ -181,13 +187,17 @@ export default function MenuListScreen() {
             unit: String(row.unit ?? row.units ?? 'pcs'),
             avgUnitCost: Number(row.avgUnitCost ?? row.avg_unit_cost ?? 0),
           })).filter((row) => row.itemId);
-          if (!cancelled) setLineSuggestions((previous) => ({ ...previous, [lineKey]: mapped }));
+          if (!cancelled && !controller.signal.aborted) setLineSuggestions((previous) => ({ ...previous, [lineKey]: mapped }));
         } catch {
-          if (!cancelled) setLineSuggestions((previous) => ({ ...previous, [lineKey]: [] }));
+          if (!cancelled && !controller.signal.aborted) setLineSuggestions((previous) => ({ ...previous, [lineKey]: [] }));
         }
-      }, 220));
+      }, 200));
     }
-    return () => { cancelled = true; timers.forEach(clearTimeout); };
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+      controllers.forEach((controller) => controller.abort());
+    };
   }, [lineSearches]);
 
   function updateEditLine(key: string, patch: Partial<EditableLine>) {

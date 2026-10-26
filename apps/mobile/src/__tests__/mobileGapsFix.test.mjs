@@ -31,18 +31,25 @@ describe('mobile gaps vs web — adjust fields', () => {
 
 describe('mobile gaps vs web — receive SKU + name suggest', () => {
   const src = read('screens/inventory/ReceiveGoodsScreen.tsx');
-  it('builds suggest query from name or SKU', () => {
+  it('searches using the field the user is actively editing', () => {
     assert.match(src, /const nameQ = form\.item_name\.trim\(\)/);
     assert.match(src, /const skuQ = form\.item_id\.trim\(\)/);
+    assert.match(src, /suggestionField === 'item_name' \? nameQ : skuQ/);
+    assert.match(src, /setSuggestionField\('item_id'\)/);
+    assert.match(src, /setSuggestionField\('item_name'\)/);
   });
   it('re-runs suggest when item_id changes', () => {
-    assert.match(src, /\[form\.item_name, form\.item_id, selectedExistingItem\]/);
+    assert.match(src, /\[form\.item_name, form\.item_id, selectedExistingItem, suggestionField\]/);
   });
   it('shows SKU-oriented suggestion panel under item id', () => {
     assert.match(src, /Type SKU or name/);
   });
-  it('still calls INVENTORY_SUGGEST endpoint', () => {
-    assert.match(src, /API_ENDPOINTS\.INVENTORY_SUGGEST/);
+  it('uses the bounded web-parity inventory list request and cancels stale searches', () => {
+    assert.match(src, /API_ENDPOINTS\.GET_STOCK/);
+    assert.match(src, /pageSize: 8, limit: 8/);
+    assert.match(src, /new AbortController\(\)/);
+    assert.match(src, /controller\.abort\(\)/);
+    assert.doesNotMatch(src, /params: \{ shopId: '1', limit: 20 \}/);
   });
 });
 

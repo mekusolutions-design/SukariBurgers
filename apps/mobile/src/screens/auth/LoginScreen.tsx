@@ -65,7 +65,7 @@ export default function LoginScreen() {
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={typography.title}>RestFlow Login</Text>
+        <Text style={typography.title}>Sukari Burgers Login</Text>
         <Text style={styles.subtitle}>Sign in to manage your kitchen</Text>
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}

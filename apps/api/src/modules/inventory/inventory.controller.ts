@@ -118,6 +118,24 @@ export class InventoryController {
     return this.inventoryService.getAlerts(scopedShop);
   }
 
+  @Get('suggest')
+  @Roles('MANAGER', 'ADMIN', 'KITCHEN', 'POS')
+  @ApiOperation({ summary: 'Search existing inventory SKUs for receiving pickers' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  async suggest(
+    @CurrentShop() scopedShop: string,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : 10;
+    return this.inventoryService.suggest({
+      shopId: scopedShop,
+      q,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : 10,
+    });
+  }
+
   @Get('categories')
   @Roles('MANAGER', 'ADMIN', 'KITCHEN', 'POS')
   @ApiOperation({ summary: 'Canonical inventory category list' })

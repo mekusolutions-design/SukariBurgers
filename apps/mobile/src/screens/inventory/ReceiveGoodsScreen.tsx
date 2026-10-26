@@ -1,4 +1,4 @@
-﻿// apps/mobile/src/screens/inventory/ReceiveGoodsScreen.tsx
+// apps/mobile/src/screens/inventory/ReceiveGoodsScreen.tsx
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useEffect, useState } from 'react';
@@ -37,7 +37,7 @@ type RootStackParamList = {
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'Receive'>;
 
-const dateOnlyToday = () => new Date().toISOString().split('T')[0];
+const dateOnlyToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 type InventorySuggestion = {
   itemId: string;
@@ -63,25 +63,6 @@ function normalizeSuggestion(raw: Record<string, unknown>): InventorySuggestion 
     avgUnitCost: Number(raw.avgUnitCost ?? raw.avg_unit_cost ?? 0),
   };
 }
-
-function editDistanceAtMostOne(a: string, b: string): boolean {
-  const left = a.toLowerCase().trim();
-  const right = b.toLowerCase().trim();
-  if (!left || !right || Math.abs(left.length - right.length) > 1) return false;
-  if (left === right) return true;
-  let i = 0; let j = 0; let edits = 0;
-  while (i < left.length && j < right.length) {
-    if (left[i] === right[j]) { i++; j++; continue; }
-    edits++;
-    if (edits > 1) return false;
-    if (left.length > right.length) i++;
-    else if (right.length > left.length) j++;
-    else { i++; j++; }
-  }
-  if (i < left.length || j < right.length) edits++;
-  return edits <= 1;
-}
-
 
 const emptyForm = () => ({
   item_id: '',
@@ -121,22 +102,24 @@ export default function ReceiveGoodsScreen() {
   const [suggestions, setSuggestions] = useState<InventorySuggestion[]>([]);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [suggestionField, setSuggestionField] = useState<'item_id' | 'item_name'>('item_id');
   const [selectedExistingItem, setSelectedExistingItem] = useState<InventorySuggestion | null>(null);
 
   useEffect(() => {
     const params = route.params as { scannedItemId?: string } | undefined;
     const scannedId = params?.scannedItemId;
     if (scannedId) {
+      setSuggestionField('item_id');
       setForm((prev) => ({ ...prev, item_id: scannedId }));
       navigation.setParams({ scannedItemId: undefined } as never);
     }
   }, [route.params, navigation]);
 
-  // Suggest from item name OR SKU (item_id) â€” web/Michael parity
+  // Search by whichever field the user is currently editing, matching web.
   useEffect(() => {
     const nameQ = form.item_name.trim();
     const skuQ = form.item_id.trim();
-    const query = nameQ.length >= 1 ? nameQ : skuQ;
+    const query = suggestionField === 'item_name' ? nameQ : skuQ;
     if (
       selectedExistingItem &&
       nameQ.toLowerCase() === selectedExistingItem.name.toLowerCase() &&
@@ -144,51 +127,54 @@ export default function ReceiveGoodsScreen() {
     ) {
       setSuggestions([]);
       setSuggestionError(null);
+      setSuggestionLoading(false);
       return;
     }
     if (query.length < 1) {
       setSuggestions([]);
       setSuggestionError(null);
+      setSuggestionLoading(false);
       return;
     }
-    let cancelled = false;
+
+    // Match the web receiving picker: one bounded, search-filtered request.
+    // Abort stale requests when the user types again or leaves this screen.
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       setSuggestionLoading(true);
       setSuggestionError(null);
       try {
-        const response = await apiClient.get(API_ENDPOINTS.INVENTORY_SUGGEST, {
-          params: { shopId: '1', q: query, limit: 10 },
+        const response = await apiClient.get(API_ENDPOINTS.GET_STOCK, {
+          params: { search: query, page: 1, pageSize: 8, limit: 8 },
+          signal: controller.signal,
         });
         const root = (response.data ?? {}) as Record<string, unknown>;
-        const rows = Array.isArray(root.items) ? root.items : Array.isArray(response.data) ? response.data : [];
-        let mapped = (rows as Record<string, unknown>[])
+        const rows = Array.isArray(root.items)
+          ? root.items
+          : Array.isArray(root.data)
+            ? root.data
+            : Array.isArray(response.data)
+              ? response.data
+              : [];
+        const mapped = (rows as Record<string, unknown>[])
           .map(normalizeSuggestion)
           .filter((row): row is InventorySuggestion => row !== null);
-        // If substring search returns no hit, light typo hint on name or SKU
-        if (mapped.length === 0) {
-          const fallback = await apiClient.get(API_ENDPOINTS.INVENTORY_SUGGEST, {
-            params: { shopId: '1', limit: 20 },
-          });
-          const fallbackRoot = (fallback.data ?? {}) as Record<string, unknown>;
-          const fallbackRows = Array.isArray(fallbackRoot.items) ? fallbackRoot.items : [];
-          mapped = (fallbackRows as Record<string, unknown>[])
-            .map(normalizeSuggestion)
-            .filter((row): row is InventorySuggestion => row !== null)
-            .filter((row) => editDistanceAtMostOne(query, row.name) || editDistanceAtMostOne(query, row.itemId))
-            .slice(0, 5);
-        }
-        if (!cancelled) setSuggestions(mapped);
+        if (!controller.signal.aborted) setSuggestions(mapped);
       } catch (error: unknown) {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setSuggestions([]);
           setSuggestionError(error instanceof Error ? error.message : 'Could not search existing SKUs');
         }
       } finally {
-        if (!cancelled) setSuggestionLoading(false);
+        if (!controller.signal.aborted) setSuggestionLoading(false);
       }
-    }, 220);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [form.item_name, form.item_id, selectedExistingItem]);
+    }, 200);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [form.item_name, form.item_id, selectedExistingItem, suggestionField]);
 
   useEffect(() => {
     const approvedQty =
@@ -250,7 +236,7 @@ export default function ReceiveGoodsScreen() {
 
     const unitCost = Number(form.unit_cost);
     if (!form.unit_cost.trim() || Number.isNaN(unitCost) || unitCost <= 0) {
-      newErrors.unit_cost = 'Unit cost (KES) must be greater than 0 â€” needed for inventory value';
+      newErrors.unit_cost = 'Unit cost (KES) must be greater than 0 — needed for inventory value';
     }
 
     if (!form.batch_number.trim()) {
@@ -289,6 +275,7 @@ export default function ReceiveGoodsScreen() {
     setErrors({});
     setCategoryGroup(INGREDIENT_CATEGORY_GROUPS[0]?.group ?? '');
     setSuggestions([]);
+    setSuggestionField('item_id');
     setSelectedExistingItem(null);
   };
 
@@ -385,6 +372,7 @@ export default function ReceiveGoodsScreen() {
                 placeholder="e.g. ST300"
                 value={form.item_id}
                 onChangeText={(v) => {
+                  setSuggestionField('item_id');
                   if (selectedExistingItem && v.toLowerCase() !== selectedExistingItem.itemId.toLowerCase()) {
                     setSelectedExistingItem(null);
                     setForm((prev) => ({ ...prev, item_id: v }));
@@ -411,21 +399,22 @@ export default function ReceiveGoodsScreen() {
                 {suggestions.map((item) => (
                   <TouchableOpacity key={`sku-${item.itemId}`} style={styles.suggestionRow} onPress={() => applyInventorySuggestion(item)}>
                     <Text style={styles.suggestionName}>{item.itemId}</Text>
-                    <Text style={styles.suggestionMeta}>{item.name} Â· {item.category || 'Uncategorised'} Â· {item.unit}</Text>
+                    <Text style={styles.suggestionMeta}>{item.name} · {item.category || 'Uncategorised'} · {item.unit}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
             ) : null}
-            <Text style={styles.suggestionMeta}>Type SKU or name â€” both fields search previously received inventory.</Text>
+            <Text style={styles.suggestionMeta}>Type SKU or name — both fields search previously received inventory.</Text>
           </View>
 
           <View style={styles.formGroup}>
             <Text style={typography.label}>Item Name *</Text>
             <TextInput
               style={[styles.input, errors.item_name && styles.inputError]}
-              placeholder="Type name or search previously received SKUsâ€¦"
+              placeholder="Type name or search previously received SKUs…"
               value={form.item_name}
               onChangeText={(v) => {
+                setSuggestionField('item_name');
                 if (selectedExistingItem && v.toLowerCase() !== selectedExistingItem.name.toLowerCase()) {
                   setSelectedExistingItem(null);
                   setForm((prev) => ({ ...prev, item_id: '', item_name: v }));
@@ -435,14 +424,14 @@ export default function ReceiveGoodsScreen() {
               }}
               autoCapitalize="words"
             />
-            {suggestionLoading ? <Text style={styles.suggestionMeta}>Searching existing inventoryâ€¦</Text> : null}
+            {suggestionLoading ? <Text style={styles.suggestionMeta}>Searching existing inventory…</Text> : null}
             {suggestionError ? <Text style={styles.errorText}>{suggestionError}</Text> : null}
             {suggestions.length > 0 ? (
               <View style={styles.suggestionPanel}>
                 {suggestions.map((item) => (
                   <TouchableOpacity key={item.itemId} style={styles.suggestionRow} onPress={() => applyInventorySuggestion(item)}>
                     <Text style={styles.suggestionName}>{item.name}</Text>
-                    <Text style={styles.suggestionMeta}>{item.itemId} Â· {item.category || 'Uncategorised'} Â· {item.unit}</Text>
+                    <Text style={styles.suggestionMeta}>{item.itemId} · {item.category || 'Uncategorised'} · {item.unit}</Text>
                   </TouchableOpacity>
                 ))}
               </View>

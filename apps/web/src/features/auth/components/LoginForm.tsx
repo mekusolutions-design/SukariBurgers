@@ -42,7 +42,7 @@ export function LoginForm() {
           id="email"
           type="email"
           autoComplete="email"
-          placeholder="you@restflow.com"
+          placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           invalid={!!fieldErrors.email}

@@ -25,6 +25,20 @@ function resolvePort(configService?: ConfigService): number {
   return 3000;
 }
 
+/**
+ * Render terminates the public connection at its proxy. Trust only the
+ * configured number of proxy hops so Express req.ip reflects the client rather
+ * than a shared proxy address, keeping per-client throttling meaningful.
+ * Set TRUST_PROXY_HOPS=0 when running directly without a trusted proxy.
+ */
+function resolveTrustProxyHops(): number {
+  const raw = process.env.TRUST_PROXY_HOPS?.trim();
+  if (!raw) return 1;
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 10) return parsed;
+  return 1;
+}
+
 async function bootstrap() {
   // Log before Nest boots so Render logs show activity even if AppModule fails.
   const earlyLogger = new Logger('Bootstrap');
@@ -41,6 +55,10 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
+
+  const trustProxyHops = resolveTrustProxyHops();
+  app.getHttpAdapter().getInstance().set('trust proxy', trustProxyHops);
+  logger.log(`Express trust proxy hops: ${trustProxyHops}`);
 
   app.enableShutdownHooks();
 

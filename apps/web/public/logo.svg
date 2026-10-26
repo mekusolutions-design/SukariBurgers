@@ -1,5 +1,7 @@
-<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="32" height="32" rx="8" fill="#0F4A3E"/>
-  <path d="M9 21.5V10.5C9 9.67157 9.67157 9 10.5 9H14.5C16.9853 9 19 11.0147 19 13.5C19 15.5089 17.6857 17.2103 15.8687 17.7935L20 21.5" stroke="#EAF6F1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M9 14.5H14.5" stroke="#EAF6F1" stroke-width="1.8" stroke-linecap="round"/>
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" rx="28" fill="#F28C28"/>
+  <path d="M34 42C34 29.85 43.85 20 56 20H72C84.15 20 94 29.85 94 42V47H34V42Z" fill="#FFFFFF"/>
+  <path d="M31 54H97L91 64H37L31 54Z" fill="#FFFFFF"/>
+  <path d="M38 72H90C90 83.05 81.05 92 70 92H58C46.95 92 38 83.05 38 72Z" fill="#FFFFFF"/>
+  <text x="64" y="116" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="800" fill="#FFFFFF">SB</text>
 </svg>

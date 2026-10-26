@@ -1,98 +1,59 @@
 // apps/mobile/src/lib/ingredientCategories.ts
+// Canonical categories shared with the web app and Nest API.
+// Keep the labels and order aligned with:
+// - apps/web/src/lib/catalog/ingredient-categories.ts
+// - apps/api/src/common/constants/ingredient-categories.ts
 
 export type IngredientCategoryGroup = {
   group: string;
   items: string[];
 };
 
-/** Raw inventory taxonomy only — not FinishedGoodCategory */
 export const INGREDIENT_CATEGORY_GROUPS: IngredientCategoryGroup[] = [
   {
-    group: 'Meat',
-    items: ['Beef', 'Goat', 'Lamb/Mutton', 'Pork', 'Veal', 'Game'],
-  },
-  {
-    group: 'Poultry',
-    items: ['Chicken', 'Turkey', 'Duck', 'Other Poultry'],
-  },
-  {
-    group: 'Vegetables & Herbs',
+    group: 'Food ingredients',
     items: [
-      'Leafy Vegetables',
-      'Root Vegetables',
-      'Tubers',
-      'Onions',
-      'Tomatoes',
+      'Meat & Poultry',
+      'Fish & Seafood',
+      'Dairy & Eggs',
+      'Fruits & Vegetables',
+      'Grains, Cereals & Pulses',
+      'Baking & Bakery',
+      'Nuts, Seeds & Alternatives',
+      'Herbs, Spices & Seasonings',
+      'Oils, Sauces & Condiments',
+      'Sweeteners & Food Ingredients',
+      'Frozen & Prepared Foods',
     ],
   },
   {
-    group: 'Fruits',
-    items: ['Citrus', 'Berries', 'Tropical Fruits', 'Melons'],
-  },
-  {
-    group: 'Dairy & Eggs',
-    items: ['Milk', 'Cream', 'Butter', 'Cheese', 'Yoghurt', 'Eggs'],
-  },
-  {
-    group: 'Grains & Legumes',
+    group: 'Drinks & ops',
     items: [
-      'Rice',
-      'Maize/Corn',
-      'Oats',
-      'Beans',
-      'Lentils',
-      'Peas',
-      'Green Grams',
-    ],
-  },
-  {
-    group: 'Spices & Seasonings',
-    items: [
-      'Black Pepper',
-      'White Pepper',
-      'Paprika',
-      'Cayenne',
-      'Curry Powder',
-      'Turmeric',
-      'Cumin',
-      'Coriander',
-      'Cinnamon',
-    ],
-  },
-  {
-    group: 'Oils, Fats, Sauces & Condiments',
-    items: [
-      'Cooking Oil',
-      'Olive Oil',
-      'Sesame Oil',
-      'Tomato Sauce',
-      'Mayonnaise',
-      'Soy Sauce',
-      'Chilli Sauce',
-      'BBQ Sauce',
-    ],
-  },
-  {
-    group: 'Nuts, Seeds & Baking Ingredients',
-    items: ['Peanuts', 'Almonds', 'Cashewnut', 'Sesame', 'Sunflower Seeds'],
-  },
-  {
-    group: 'Beverage Ingredients',
-    items: ['Coffee', 'Tea', 'Cocoa'],
-  },
-  {
-    group: 'Bar & Specialty Ingredients',
-    items: [
-      'Cocktail Syrups',
-      'Bitters',
-      'Cocktail Fruits',
-      'Cocktail Herbs',
+      'Beverages',
+      'Alcohol & Bar',
+      'Packaging & Consumables',
+      'Cleaning, Service & Equipment',
     ],
   },
 ];
 
-export const INGREDIENT_CATEGORIES: string[] =
-  INGREDIENT_CATEGORY_GROUPS.flatMap((g) => g.items);
+// Keep this flat list in the exact canonical order used by web and Nest.
+export const INGREDIENT_CATEGORIES: string[] = [
+  'Meat & Poultry',
+  'Fish & Seafood',
+  'Dairy & Eggs',
+  'Fruits & Vegetables',
+  'Grains, Cereals & Pulses',
+  'Baking & Bakery',
+  'Nuts, Seeds & Alternatives',
+  'Herbs, Spices & Seasonings',
+  'Oils, Sauces & Condiments',
+  'Sweeteners & Food Ingredients',
+  'Beverages',
+  'Alcohol & Bar',
+  'Frozen & Prepared Foods',
+  'Packaging & Consumables',
+  'Cleaning, Service & Equipment',
+];
 
-export const DEFAULT_INGREDIENT_CATEGORY =
-  INGREDIENT_CATEGORIES[0] ?? 'Chicken';
+export const DEFAULT_INGREDIENT_CATEGORY = 'Packaging & Consumables';
