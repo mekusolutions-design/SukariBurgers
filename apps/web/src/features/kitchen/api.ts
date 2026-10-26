@@ -464,18 +464,8 @@ export const kitchenApi = {
         name: String(raw.name ?? raw.itemName ?? raw.item_name ?? ""),
         unit: String(raw.unit ?? "pcs"),
         expectedQuantity: Number(
-          raw.expectedQuantity ??
-            raw.expected_quantity ??
-            raw.system_qty ??
-            raw.systemQty ??
-            0,
+          raw.expectedQuantity ?? raw.system_qty ?? raw.systemQty ?? 0,
         ),
-        daysSinceLastCount:
-          raw.days_since_last_count != null
-            ? Number(raw.days_since_last_count)
-            : raw.daysSinceLastCount != null
-              ? Number(raw.daysSinceLastCount)
-              : null,
         countedQuantity:
           raw.countedQuantity != null
             ? Number(raw.countedQuantity)

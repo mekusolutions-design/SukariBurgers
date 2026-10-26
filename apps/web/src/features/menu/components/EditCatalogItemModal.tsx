@@ -295,10 +295,11 @@ export function EditCatalogItemModal({
               );
             }
             if (ids.length === 1) {
+              const onlyId = ids[0] as string;
               return {
-                component_key: stableComponentKey("FIXED", ids[0], i),
+                component_key: stableComponentKey("FIXED", onlyId, i),
                 component_type: "FIXED",
-                finished_good_id: ids[0],
+                finished_good_id: onlyId,
                 finished_good_name: l.itemName.trim() || undefined,
                 quantity_required: qty,
                 unit: l.unit || "pcs",
