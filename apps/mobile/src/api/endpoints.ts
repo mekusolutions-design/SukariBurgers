@@ -8,6 +8,9 @@ export const API_ENDPOINTS = {
   INVENTORY_SUGGEST: '/inventory/suggest',
 
   KITCHEN_CLOSING_STOCK: '/kitchen/closing-stock',
+  KITCHEN_CLOSING_STOCK_LEDGER: '/kitchen/closing-stock/ledger',
+  KITCHEN_CLOSING_STOCK_HISTORY: '/kitchen/closing-stock/history',
+  KITCHEN_CLOSING_STOCK_ADJUSTMENTS: '/kitchen/closing-stock/adjustments',
   KITCHEN_ACTIVE_ORDERS: '/kitchen/active-orders',
   KITCHEN_ORDER_STATUS: (orderId: string) =>
     `/kitchen/orders/${orderId}/status`,

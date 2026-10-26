@@ -23,11 +23,14 @@ export const useRole = () => {
 
   /** Only ADMIN changes user roles */
   const canChangeUserRole = isAdmin;
+  /** Parity with web/API: ADMIN | MANAGER | KITCHEN */
+  const canSubmitClosingStock = isAdmin || isManager || isKitchen;
 
   return {
     isAdmin,
     isManager,
     isKitchen,
+    canSubmitClosingStock,
     isPos,
     canUsePos,
     canEditMenu,

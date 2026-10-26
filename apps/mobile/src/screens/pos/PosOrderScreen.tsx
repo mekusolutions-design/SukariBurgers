@@ -17,6 +17,16 @@ import posApiClient from '../../api/posApiClient';
 import { API_ENDPOINTS } from '../../api/endpoints';
 import { useInventoryStore } from '../../features/inventory/inventoryStore';
 import { usePosStore } from '../../features/pos/posStore';
+import {
+  buildLineSelections,
+  choiceLinesNeedingPick,
+  isMenuSellable,
+  normalizeBootstrapMenus,
+  normalizeMenuLines,
+  validateLineSelections,
+  type MenuComponentLine,
+  type ComponentSelection,
+} from '../../features/pos/posParityCore';
 import { colors, spacing } from '../../lib/theme';
 
 interface MenuItem {
@@ -25,6 +35,10 @@ interface MenuItem {
   price: number;
   category?: string;
   isAvailable?: boolean;
+  maxPortions?: number;
+  availableQuantity?: number;
+  lines?: MenuComponentLine[];
+  finishedGoodId?: string | null;
   ingredients?: Record<string, number>;
 }
 
@@ -67,6 +81,7 @@ interface OrderItem extends MenuItem {
   line_type?: 'menu_item' | 'combo';
   combo_id?: string;
   combo_selections?: ComboSelection[];
+  selections?: ComponentSelection[];
 }
 
 function fuzzyMatch(name: string, query: string): boolean {
@@ -118,6 +133,9 @@ export default function PosOrderScreen(): React.JSX.Element {
   const [customerPhone, setCustomerPhone] = useState('');
   const [tableNumber, setTableNumber] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+  /** Multi-option CHOICE picker (web NewOrderPanel parity) */
+  const [choiceMenu, setChoiceMenu] = useState<MenuItem | null>(null);
+  const [choicePicks, setChoicePicks] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const fetchMenu = async () => {
@@ -128,10 +146,12 @@ export default function PosOrderScreen(): React.JSX.Element {
         let raw: any[] = [];
         try {
           const boot = await posApiClient.get(API_ENDPOINTS.POS_BOOTSTRAP);
-          raw =
-            boot.data?.menus ||
-            boot.data?.items ||
-            [];
+          const data = boot.data ?? {};
+          raw = normalizeBootstrapMenus({
+            menus: data.menus,
+            items: data.items,
+            availability: data.availability,
+          });
         } catch {
           /* fall through */
         }
@@ -152,16 +172,31 @@ export default function PosOrderScreen(): React.JSX.Element {
               m.sellingPrice ?? m.selling_price ?? m.price ?? 0,
             );
             const name = String(m.name ?? id);
-            const available =
-              m.isAvailable !== false &&
-              m.is_available !== false &&
-              Number(m.maxPortions ?? m.availableQuantity ?? 1) > 0;
+            const maxPortions = Math.max(
+              0,
+              Math.floor(Number(m.maxPortions ?? m.availableQuantity ?? 0)),
+            );
+            const available = isMenuSellable({
+              maxPortions,
+              availableQuantity: maxPortions,
+              isAvailable:
+                m.isAvailable !== false && m.is_available !== false
+                  ? (m.isAvailable as boolean | undefined)
+                  : false,
+            });
             return {
               id,
               name,
               price: Number.isFinite(price) ? price : 0,
               category: (m.category as string) || undefined,
               isAvailable: available,
+              maxPortions,
+              availableQuantity: maxPortions,
+              lines: normalizeMenuLines(m.lines),
+              finishedGoodId:
+                (m.finishedGoodId as string | null | undefined) ??
+                (m.finished_good_id as string | null | undefined) ??
+                null,
             } as MenuItem;
           })
           .filter(Boolean) as MenuItem[];
@@ -241,17 +276,80 @@ export default function PosOrderScreen(): React.JSX.Element {
       .slice(0, 10);
   }, [menu, combos, debouncedSearch]);
 
-  const addToOrder = (menuItem: MenuItem) => {
+  const addToOrder = (menuItem: MenuItem, preferred?: Record<string, string>) => {
+    if (!isMenuSellable(menuItem)) {
+      Alert.alert('Unavailable', `${menuItem.name} is out of stock.`);
+      return;
+    }
+    const needing = choiceLinesNeedingPick(menuItem.lines);
+    if (needing.length > 0 && !preferred) {
+      setChoiceMenu(menuItem);
+      setChoicePicks({});
+      return;
+    }
+    const selections = buildLineSelections(menuItem.lines, 1, preferred);
+    if (menuItem.lines && menuItem.lines.length > 0 && selections === null) {
+      Alert.alert(
+        'Choose options',
+        `${menuItem.name} needs component selections before it can be sold.`,
+      );
+      setChoiceMenu(menuItem);
+      setChoicePicks(preferred ?? {});
+      return;
+    }
+    const err = validateLineSelections(
+      menuItem.name,
+      menuItem.lines,
+      selections ?? [],
+      1,
+    );
+    if (err) {
+      Alert.alert('Incomplete selection', err);
+      return;
+    }
     setOrder((prev) => {
       const existing = prev.find((i) => i.id === menuItem.id);
       if (existing) {
+        const nextQty = existing.qty + 1;
+        const nextSel =
+          buildLineSelections(menuItem.lines, nextQty, preferred) ??
+          existing.selections;
         return prev.map((i) =>
-          i.id === menuItem.id ? { ...i, qty: i.qty + 1 } : i,
+          i.id === menuItem.id
+            ? { ...i, qty: nextQty, selections: nextSel }
+            : i,
         );
       }
-      return [...prev, { ...menuItem, qty: 1 }];
+      return [
+        ...prev,
+        {
+          ...menuItem,
+          qty: 1,
+          line_type: 'menu_item' as const,
+          selections: selections ?? [],
+        },
+      ];
     });
+    setChoiceMenu(null);
+    setChoicePicks({});
   };
+
+  const confirmChoicePicks = () => {
+    if (!choiceMenu) return;
+    const needing = choiceLinesNeedingPick(choiceMenu.lines);
+    for (const line of needing) {
+      if (!choicePicks[line.componentKey]) {
+        Alert.alert(
+          'Select option',
+          `Pick an option for ${line.finishedGoodCategoryName || line.componentKey}`,
+        );
+        return;
+      }
+    }
+    addToOrder(choiceMenu, choicePicks);
+  };
+
+
 
   const selectSearchHit = (hit: SearchHit) => {
     if (!hit.available) return;
@@ -314,17 +412,26 @@ export default function PosOrderScreen(): React.JSX.Element {
 
   const increaseQty = (id: string) => {
     setOrder((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, qty: item.qty + 1 } : item)),
+      prev.map((i) => {
+        if (i.id !== id) return i;
+        const nextQty = i.qty + 1;
+        const nextSel = buildLineSelections(i.lines, nextQty) ?? i.selections;
+        return { ...i, qty: nextQty, selections: nextSel };
+      }),
     );
   };
 
   const decreaseQty = (id: string) => {
     setOrder((prev) =>
       prev
-        .map((item) =>
-          item.id === id && item.qty > 1 ? { ...item, qty: item.qty - 1 } : item,
-        )
-        .filter((item) => item.qty > 0),
+        .map((i) => {
+          if (i.id !== id) return i;
+          const nextQty = i.qty - 1;
+          if (nextQty <= 0) return null as unknown as OrderItem;
+          const nextSel = buildLineSelections(i.lines, nextQty) ?? i.selections;
+          return { ...i, qty: nextQty, selections: nextSel };
+        })
+        .filter(Boolean) as OrderItem[],
     );
   };
 
@@ -348,6 +455,20 @@ export default function PosOrderScreen(): React.JSX.Element {
       return;
     }
 
+    for (const item of order) {
+      if (item.line_type === 'combo' || item.combo_id) continue;
+      const msg = validateLineSelections(
+        item.name,
+        item.lines,
+        item.selections,
+        item.qty,
+      );
+      if (msg) {
+        Alert.alert('Incomplete order', msg);
+        return;
+      }
+    }
+
     const result = await submitOrder({
       order_type: orderType,
       table_number: tableNumber || undefined,
@@ -369,6 +490,7 @@ export default function PosOrderScreen(): React.JSX.Element {
         quantity: item.qty,
         unit_price: item.price,
         selling_price: item.price,
+        selections: item.selections ?? [],
       })),
       total_amount: total,
       tax_amount: total * 0.16,
@@ -499,7 +621,14 @@ export default function PosOrderScreen(): React.JSX.Element {
           >
             <View style={{ flex: 1, marginRight: spacing.sm }}>
               <Text style={[styles.menuName, !item.available && styles.unavailableText]}>{item.name}</Text>
-              <Text style={styles.resultMeta}>{item.kind === 'combo' ? 'COMBO' : 'ITEM'}{item.category ? ` · ${item.category}` : ''}{!item.available ? ' · Unavailable' : ''}</Text>
+              <Text style={styles.resultMeta}>
+                {item.kind === 'combo' ? 'COMBO' : 'ITEM'}
+                {item.category ? ` · ${item.category}` : ''}
+                {item.kind === 'item' && item.menu?.maxPortions != null
+                  ? ` · ${item.menu.maxPortions} left`
+                  : ''}
+                {!item.available ? ' · Unavailable' : ''}
+              </Text>
             </View>
             <Text style={[styles.menuPrice, !item.available && styles.unavailableText]}>KES {item.price.toFixed(2)}</Text>
           </TouchableOpacity>
@@ -517,9 +646,21 @@ export default function PosOrderScreen(): React.JSX.Element {
           style={styles.orderList}
           renderItem={({ item }) => (
             <View style={styles.orderItem}>
+              <View style={{ flex: 1 }}>
               <Text style={styles.orderName}>
                 {item.name} × {item.qty}
               </Text>
+              {item.selections && item.selections.length > 0 ? (
+                <Text style={styles.resultMeta}>
+                  {item.selections
+                    .map(
+                      (s) =>
+                        `${s.finished_good_name || s.finished_good_id}×${s.quantity}`,
+                    )
+                    .join(' · ')}
+                </Text>
+              ) : null}
+              </View>
               <View style={styles.quantityControls}>
                 <TouchableOpacity onPress={() => decreaseQty(item.id)} style={styles.qtyButton}>
                   <Text>-</Text>
@@ -601,10 +742,121 @@ export default function PosOrderScreen(): React.JSX.Element {
         </View>
       </Modal>
     </View>
+      {/* CHOICE component picker — web NewOrderPanel parity */}
+      <Modal
+        visible={!!choiceMenu}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setChoiceMenu(null);
+          setChoicePicks({});
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.subtitleText}>
+              {choiceMenu?.name ?? 'Options'}
+            </Text>
+            <Text style={styles.resultMeta}>
+              Choose options for each component (same as web POS)
+            </Text>
+            <ScrollView style={{ maxHeight: 360, marginVertical: spacing.sm }}>
+              {(choiceMenu ? choiceLinesNeedingPick(choiceMenu.lines) : []).map(
+                (line) => (
+                  <View key={line.componentKey} style={{ marginBottom: spacing.md }}>
+                    <Text style={styles.orderName}>
+                      {line.finishedGoodCategoryName || line.componentKey}
+                    </Text>
+                    {(line.options ?? []).map((opt) => {
+                      const selected =
+                        choicePicks[line.componentKey] === opt.finishedGoodId;
+                      const oos = (opt.availableStock ?? 0) <= 0;
+                      return (
+                        <TouchableOpacity
+                          key={opt.finishedGoodId}
+                          disabled={oos && !selected}
+                          style={[
+                            styles.choiceOption,
+                            selected && styles.choiceOptionSelected,
+                            oos && !selected && styles.menuItemUnavailable,
+                          ]}
+                          onPress={() =>
+                            setChoicePicks((prev) => ({
+                              ...prev,
+                              [line.componentKey]: opt.finishedGoodId,
+                            }))
+                          }
+                        >
+                          <Text style={styles.menuName}>
+                            {opt.finishedGoodName || opt.finishedGoodId}
+                          </Text>
+                          <Text style={styles.resultMeta}>
+                            {oos
+                              ? 'Out of stock'
+                              : `Stock ${opt.availableStock ?? '—'}`}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ),
+              )}
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.qtyButton}
+                onPress={() => {
+                  setChoiceMenu(null);
+                  setChoicePicks({});
+                }}
+              >
+                <Text>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.checkoutButton}
+                onPress={confirmChoicePicks}
+              >
+                <Text style={styles.checkoutText}>Add to order</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
   );
 }
 
 const styles = StyleSheet.create({
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: spacing.md,
+    maxHeight: '85%',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  choiceOption: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    padding: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  choiceOptionSelected: {
+    borderColor: colors.primary,
+    backgroundColor: '#FFF5EB',
+  },
+
   container: { flex: 1, backgroundColor: colors.background, padding: spacing.md },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { marginTop: spacing.md, color: colors.textSecondary },

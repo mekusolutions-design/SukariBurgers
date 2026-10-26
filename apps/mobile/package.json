@@ -8,7 +8,9 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --test src/features/pos/posParityCore.test.mjs",
+    "test:parity": "node --test src/features/pos/posParityCore.test.mjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

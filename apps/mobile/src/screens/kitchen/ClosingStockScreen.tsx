@@ -1,4 +1,10 @@
 // apps/mobile/src/screens/kitchen/ClosingStockScreen.tsx
+/**
+ * Mobile parity with web Closing Stock:
+ * - Expected qty = backend system_qty (usable batch on-hand)
+ * - counted 0 is valid; blank = not counted
+ * - KITCHEN | MANAGER | ADMIN may submit
+ */
 import React, { useCallback, useState } from 'react';
 import {
   View,
@@ -23,9 +29,8 @@ import { useRole } from '../../hooks/useRole';
 const DEFAULT_SHOP_ID = '1';
 
 export default function ClosingStockScreen() {
-  const { isAdmin, isManager } = useRole();
-  /** Matches API POST /kitchen/closing-stock @Roles('MANAGER','ADMIN') */
-  const canSubmit = isAdmin || isManager;
+  const { canSubmitClosingStock } = useRole();
+  const canSubmit = canSubmitClosingStock;
   const [lines, setLines] = useState<ClosingStockLine[]>([]);
   const [counts, setCounts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -40,8 +45,8 @@ export default function ClosingStockScreen() {
       setLines(data);
       const next: Record<string, string> = {};
       for (const row of data) {
-        next[row.itemId] =
-          row.countedQty != null ? String(row.countedQty) : '';
+        // Do not prefill counted — blank means uncounted
+        next[row.itemId] = '';
       }
       setCounts(next);
     } catch (err: unknown) {
@@ -60,37 +65,48 @@ export default function ClosingStockScreen() {
     }, [load]),
   );
 
+  /** Blank = not counted; "0" = counted zero (valid). */
   const completedCount = lines.filter((l) =>
-    (counts[l.itemId] ?? '').trim(),
+    (counts[l.itemId] ?? '').trim() !== '',
   ).length;
 
   async function handleSubmit() {
     if (!canSubmit) {
       Alert.alert(
         'Not allowed',
-        'Only managers and administrators can submit closing stock.',
+        'Kitchen staff, managers, and administrators can submit closing stock.',
       );
       return;
     }
     const payload = lines
       .map((l) => {
         const raw = (counts[l.itemId] ?? '').trim();
-        if (!raw) return null;
+        if (raw === '') return null;
         const countedQty = Number(raw);
-        if (!Number.isFinite(countedQty)) return null;
+        if (!Number.isFinite(countedQty) || countedQty < 0) return null;
         return { itemId: l.itemId, countedQty };
       })
       .filter((x): x is { itemId: string; countedQty: number } => x !== null);
 
     if (payload.length === 0) {
-      Alert.alert('Nothing to submit', 'Enter at least one counted quantity.');
+      Alert.alert(
+        'Nothing to submit',
+        'Enter at least one counted quantity. Use 0 when the item is empty.',
+      );
       return;
     }
 
     setSubmitting(true);
     try {
-      await submitClosingStock(DEFAULT_SHOP_ID, payload);
-      Alert.alert('Submitted', 'Closing stock count saved.');
+      const result = await submitClosingStock(DEFAULT_SHOP_ID, payload);
+      const msg =
+        result?.message ||
+        (result?.repaired
+          ? 'Closing stock saved — inventory batches re-synced.'
+          : result?.alreadySubmitted
+            ? 'Closing stock already submitted for this shift.'
+            : 'Closing stock count saved.');
+      Alert.alert('Submitted', String(msg));
       await load();
     } catch (err: unknown) {
       const message =
@@ -105,26 +121,26 @@ export default function ClosingStockScreen() {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.hint}>Loading stock for count…</Text>
+        <Text style={styles.muted}>Loading stock count…</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.help}>
-        System quantities are filled in. Enter only what you counted.
-      </Text>
-      <Text style={styles.meta}>
-        {completedCount} of {lines.length} counted
-      </Text>
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {!canSubmit ? (
-        <Text style={styles.banner}>
-          View only — only managers and admins can submit closing stock.
+      <View style={styles.header}>
+        <Text style={styles.title}>Closing stock</Text>
+        <Text style={styles.sub}>
+          Expected matches Inventory (usable stock). 0 is a valid count.
         </Text>
-      ) : null}
+        {!canSubmit ? (
+          <Text style={styles.warn}>
+            You can review quantities; only kitchen, managers, and admins can
+            submit.
+          </Text>
+        ) : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+      </View>
 
       <FlatList
         data={lines}
@@ -132,42 +148,80 @@ export default function ClosingStockScreen() {
         refreshControl={
           <RefreshControl refreshing={loading} onRefresh={load} />
         }
+        contentContainerStyle={{ paddingBottom: spacing.xl * 2 }}
         ListEmptyComponent={
-          <View style={styles.center}>
-            <Text style={styles.hint}>No stock items to count</Text>
-          </View>
+          <Text style={styles.muted}>No inventory items to count.</Text>
         }
-        renderItem={({ item }) => (
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Text style={styles.name}>{item.name || item.itemId}</Text>
-              <Text style={styles.system}>
-                System: {item.systemQty} {item.unit}
+        renderItem={({ item }) => {
+          const raw = counts[item.itemId] ?? '';
+          const counted =
+            raw.trim() === '' ? null : Number(raw);
+          const variance =
+            counted != null && Number.isFinite(counted)
+              ? counted - item.systemQty
+              : null;
+          return (
+            <View style={styles.row}>
+              <View style={styles.rowTop}>
+                <Text style={styles.name}>{item.name}</Text>
+                <Text style={styles.unit}>{item.unit}</Text>
+              </View>
+              <Text style={styles.expected}>
+                Expected {item.systemQty}
+                {item.daysSinceLastCount != null &&
+                item.daysSinceLastCount > 0
+                  ? ` · last count ${item.daysSinceLastCount}d ago`
+                  : ''}
               </Text>
+              <View style={styles.countRow}>
+                <Text style={styles.label}>Counted</Text>
+                <TextInput
+                  style={[styles.input, !canSubmit && styles.inputDisabled]}
+                  keyboardType="decimal-pad"
+                  editable={canSubmit && !submitting}
+                  value={raw}
+                  placeholder="—"
+                  placeholderTextColor={colors.textSecondary}
+                  onChangeText={(t) =>
+                    setCounts((prev) => ({ ...prev, [item.itemId]: t }))
+                  }
+                />
+              </View>
+              {variance != null ? (
+                <Text
+                  style={[
+                    styles.variance,
+                    variance === 0
+                      ? styles.varOk
+                      : Math.abs(variance) > Math.max(item.systemQty, 1) * 0.1
+                        ? styles.varBad
+                        : styles.varWarn,
+                  ]}
+                >
+                  {variance === 0
+                    ? 'Matches'
+                    : `${variance > 0 ? '+' : ''}${variance.toFixed(2)} ${item.unit}`}
+                </Text>
+              ) : (
+                <Text style={styles.mutedSmall}>Enter count (0 allowed)</Text>
+              )}
             </View>
-            <TextInput
-              style={styles.input}
-              editable={canSubmit}
-              keyboardType="decimal-pad"
-              placeholder="Counted"
-              placeholderTextColor={colors.textSecondary}
-              value={counts[item.itemId] ?? ''}
-              onChangeText={(text) =>
-                setCounts((prev) => ({ ...prev, [item.itemId]: text }))
-              }
-            />
-          </View>
-        )}
+          );
+        }}
       />
 
-      {canSubmit ? (
+      <View style={styles.footer}>
+        <Text style={styles.footerMeta}>
+          {completedCount} of {lines.length} counted
+        </Text>
         <TouchableOpacity
           style={[
             styles.submit,
-            (submitting || completedCount === 0) && styles.submitDisabled,
+            (!canSubmit || submitting || completedCount === 0) &&
+              styles.submitDisabled,
           ]}
-          onPress={handleSubmit}
-          disabled={submitting || completedCount === 0}
+          disabled={!canSubmit || submitting || completedCount === 0}
+          onPress={() => void handleSubmit()}
         >
           {submitting ? (
             <ActivityIndicator color="#fff" />
@@ -175,92 +229,89 @@ export default function ClosingStockScreen() {
             <Text style={styles.submitText}>Submit closing stock</Text>
           )}
         </TouchableOpacity>
-      ) : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-    padding: spacing.md,
-  },
+  container: { flex: 1, backgroundColor: colors.background },
   center: {
     flex: 1,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.lg,
+    gap: spacing.sm,
   },
-  help: {
-    ...typography.small,
-    color: colors.textSecondary,
-    marginBottom: spacing.xs,
+  header: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
+    gap: 4,
   },
-  meta: {
-    ...typography.small,
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
-  },
-  error: {
-    color: colors.danger,
-    marginBottom: spacing.sm,
-  },
-  banner: {
-    ...typography.small,
-    color: colors.warning,
-    marginBottom: spacing.sm,
-    fontWeight: '600',
-  },
-  hint: {
-    ...typography.body,
-    color: colors.textSecondary,
-  },
+  title: { ...typography.title, color: colors.textPrimary },
+  sub: { ...typography.small, color: colors.textSecondary },
+  warn: { ...typography.small, color: colors.warning },
+  error: { ...typography.small, color: colors.danger },
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderRadius: 10,
-    padding: spacing.md,
+    marginHorizontal: spacing.md,
     marginBottom: spacing.sm,
-  },
-  rowLeft: {
-    flex: 1,
-    marginRight: spacing.sm,
-  },
-  name: {
-    ...typography.body,
-    fontWeight: '600',
-  },
-  system: {
-    ...typography.small,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-  input: {
-    width: 100,
-    borderWidth: 1,
-    borderColor: colors.border ?? '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    textAlign: 'right',
-    color: colors.text ?? '#111',
-    backgroundColor: colors.background,
-  },
-  submit: {
-    backgroundColor: colors.primary,
     padding: spacing.md,
     borderRadius: 12,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  rowTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  name: { ...typography.label, color: colors.textPrimary, flex: 1 },
+  unit: { ...typography.small, color: colors.textSecondary },
+  expected: {
+    ...typography.small,
+    color: colors.textSecondary,
+    marginTop: 4,
+  },
+  countRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     marginTop: spacing.sm,
+    gap: spacing.sm,
   },
-  submitDisabled: {
-    opacity: 0.5,
+  label: { ...typography.small, color: colors.textPrimary, width: 64 },
+  input: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    textAlign: 'right',
+    color: colors.textPrimary,
+    backgroundColor: colors.background,
   },
-  submitText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 16,
+  inputDisabled: { opacity: 0.6 },
+  variance: { marginTop: 6, ...typography.small },
+  varOk: { color: colors.success },
+  varWarn: { color: colors.warning },
+  varBad: { color: colors.danger },
+  muted: { ...typography.small, color: colors.textSecondary, textAlign: 'center' },
+  mutedSmall: { ...typography.small, color: colors.textSecondary, marginTop: 4 },
+  footer: {
+    padding: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
+    gap: spacing.sm,
   },
+  footerMeta: { ...typography.small, color: colors.textSecondary },
+  submit: {
+    backgroundColor: colors.primary,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  submitDisabled: { opacity: 0.45 },
+  submitText: { color: '#fff', fontWeight: '600' },
 });
