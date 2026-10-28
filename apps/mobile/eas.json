@@ -7,7 +7,7 @@
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://sukariburgers.onrender.com",
-        "EXPO_PUBLIC_POS_API_URL": "https://sukariburgersgo.onrender.com",
+        "EXPO_PUBLIC_POS_API_URL": "https://sukariburgers.onrender.com",
         "EXPO_PUBLIC_USE_GO_POS": "true"
       }
     }

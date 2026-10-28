@@ -675,8 +675,10 @@ export class MenuService {
           event.created_at.toISOString() ||
           existing.createdAt;
 
+        // Non-empty lines only — empty array must NOT wipe prior FIXED/CHOICE
+        // components (otherwise maxPortions collapses to 0 and POS disables the item).
         const payloadLines = Array.isArray(payload.lines) ? payload.lines : null;
-        if (payloadLines) {
+        if (payloadLines && payloadLines.length > 0) {
           const map = new Map<string, LineDraft>();
           payloadLines.forEach((raw, idx) => {
             const row = asRecord(raw);
@@ -1143,7 +1145,14 @@ export class MenuService {
       throw new BadRequestException('selling_price must be 0 or more');
     }
 
+    // Empty lines[] means "do not change components" — never emit a wiping adjust.
+    // Clients that omit lines keep prior components; explicit non-empty lists replace.
     let enriched: NormalizedLine[] | null = null;
+    if (dto.lines && dto.lines.length === 0) {
+      this.logger.warn(
+        `menu adjust ${menuId}: empty lines[] ignored; keeping existing components`,
+      );
+    }
     if (dto.lines && dto.lines.length > 0) {
       const asDto = {
         name,
