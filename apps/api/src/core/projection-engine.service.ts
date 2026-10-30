@@ -184,6 +184,11 @@ export class ProjectionEngineService {
           await this.handleStockIncrease(payload, shopId, event);
           break;
 
+        case 'receive_voided':
+        case 'received_approval_rejected':
+          await this.handleReceiveVoided(payload, shopId, event);
+          break;
+
         case 'production_finished':
           await this.handleProductionFinished(payload, shopId, event);
           break;
@@ -795,6 +800,160 @@ export class ProjectionEngineService {
     }
 
     await this.emitStock(itemId, shopId, row, asString(payload.item_name));
+  }
+
+  /**
+   * Reverse stock from a rejected receiving approval.
+   * Rule: void min(batch.qty_remaining, original receive qty) on the batch tied to
+   * source_event_id (event_id on InventoryBatch). Recompute projection from usable batches.
+   * Partial consumption after receive → only remaining qty is removed; shortfall is logged.
+   */
+  private async handleReceiveVoided(
+    payload: BasePayload,
+    shopId: string,
+    event: Partial<
+      Pick<ProjectionEvent, 'id' | 'item_id' | 'quantity' | 'total_cost' | 'unit_cost' | 'batch_number'>
+    >,
+  ): Promise<void> {
+    const itemId =
+      asString(event.item_id) ||
+      asString(payload.item_id) ||
+      asString(payload.itemId);
+    const sourceEventId =
+      asString(payload.source_event_id) ||
+      asString(payload.sourceEventId) ||
+      asString(payload.receive_event_id);
+    const batchNumber =
+      asString(payload.batch_number) ||
+      asString(event.batch_number) ||
+      asString(payload.batchNumber);
+    const requestedQty = Math.abs(
+      asNumber(
+        event.quantity ??
+          payload.quantity_approved ??
+          payload.quantity ??
+          payload.void_quantity,
+      ),
+    );
+
+    if (!itemId || requestedQty <= 0) {
+      this.logger.warn(
+        `receive_voided skipped: missing itemId or qty (item=${itemId}, qty=${requestedQty})`,
+      );
+      return;
+    }
+
+    await this.ensureItemExists(itemId, payload);
+
+    let batch =
+      sourceEventId
+        ? await this.activeDb.inventoryBatch.findFirst({
+            where: {
+              shop_id: shopId,
+              item_id: itemId,
+              event_id: sourceEventId,
+            },
+            orderBy: { received_at: 'desc' },
+          })
+        : null;
+
+    if (!batch && batchNumber) {
+      batch = await this.activeDb.inventoryBatch.findFirst({
+        where: {
+          shop_id: shopId,
+          item_id: itemId,
+          batch_number: batchNumber,
+          qty_remaining: { gt: 0 },
+        },
+        orderBy: { received_at: 'desc' },
+      });
+    }
+
+    let take = 0;
+    if (batch) {
+      const have = Math.max(0, Number(batch.qty_remaining));
+      take = Math.min(have, requestedQty);
+      if (take < requestedQty - 1e-9) {
+        this.logger.warn(
+          `receive_voided partial: requested=${requestedQty} remaining_on_batch=${have} ` +
+            `batch=${batch.id} source=${sourceEventId} (stock already consumed after receive)`,
+        );
+      }
+      if (take > 0) {
+        await this.activeDb.inventoryBatch.update({
+          where: { id: batch.id },
+          data: { qty_remaining: Math.max(0, have - take) },
+        });
+        const voidEventId =
+          asString(event.id) || sourceEventId || `void-${Date.now()}`;
+        try {
+          await this.activeDb.inventoryMovement.create({
+            data: {
+              shop_id: shopId,
+              batch_id: batch.id,
+              item_id: itemId,
+              movement_type: 'RECEIVE_VOID',
+              quantity: -take,
+              unit_cost: batch.unit_cost,
+              reference_type: 'approval_reject',
+              reference_id: sourceEventId || voidEventId,
+              idempotency_key: `receive-void:${sourceEventId || voidEventId}:${batch.id}`,
+            },
+          });
+        } catch {
+          /* unique idempotency on replay */
+        }
+      }
+    } else {
+      // No batch row found — FEFO drain as last resort so projection does not keep ghost stock
+      this.logger.warn(
+        `receive_voided: no batch for source=${sourceEventId} batch_number=${batchNumber}; FEFO partial drain`,
+      );
+      try {
+        const consumed = await this.fefoStock.consumeStock(
+          shopId,
+          itemId,
+          requestedQty,
+          {
+            allowPartial: true,
+            referenceType: 'approval_reject',
+            referenceId: sourceEventId || asString(event.id) || `void-${itemId}`,
+            movementType: 'RECEIVE_VOID',
+          },
+        );
+        take = consumed.quantity;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`receive_voided FEFO drain failed for ${itemId}: ${message}`);
+      }
+    }
+
+    const totals = await this.sumUsableBatches(shopId, itemId);
+    await this.activeDb.inventoryProjection.upsert({
+      where: {
+        shop_id_item_id: { shop_id: shopId, item_id: itemId },
+      },
+      update: {
+        available_stock: totals.qty,
+        total_value: totals.value,
+        avg_unit_cost:
+          totals.qty > 0 ? totals.value / totals.qty : 0,
+      },
+      create: {
+        shop_id: shopId,
+        item_id: itemId,
+        available_stock: totals.qty,
+        total_value: totals.value,
+        avg_unit_cost: totals.qty > 0 ? totals.value / totals.qty : 0,
+        expired_stock: 0,
+        damaged_stock: 0,
+      },
+    });
+
+    this.logger.log(
+      `receive_voided item=${itemId} voided_qty=${take} requested=${requestedQty} ` +
+        `source=${sourceEventId} projection_qty=${totals.qty}`,
+    );
   }
 
   /**
